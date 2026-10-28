@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# 采集数据库为二进制产物，随采集增长，不入库；
+# data/tenders.json 作为样本数据保留，便于 clone 后直接预览。
+data/tenders.db
+
+.DS_Store
+.venv/
+venv/

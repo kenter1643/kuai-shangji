@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0A63D6">
+<meta name="description" content="快商机 — 覆盖全国34个省级行政区的招投标商机发现控制台">
+<title>快商机 · 全国项目商机系统</title>
+<link rel="stylesheet" href="web/style.css">
+</head>
+<body>
+
+<header class="hd">
+  <div class="hd-top">
+    <div class="logo">快</div>
+    <div>
+      <div class="brand">快<em>商机</em></div>
+      <div class="slogan">全国招投标商机发现控制台</div>
+    </div>
+    <div class="hd-dot"><i class="pulse"></i><span id="srcSt">采集中</span></div>
+  </div>
+  <nav class="tabs" id="tabs">
+    <div class="tab on" data-t="all">商机广场<small id="cAll">0</small></div>
+    <div class="tab" data-t="招标公告">招标中<small id="cBid">0</small></div>
+    <div class="tab" data-t="warn">机会预警<small id="cPre">0</small></div>
+    <div class="tab" data-t="中标结果">中标结果<small id="cWin">0</small></div>
+    <div class="tab" data-t="rival">对手分析</div>
+    <div class="tab" data-t="ai">AI 匹配</div>
+  </nav>
+</header>
+
+<div class="wrap">
+  <div class="stats" id="stats"></div>
+
+  <!-- 筛选区：商机类视图共用 -->
+  <section class="filter" id="filter">
+    <div class="srch">
+      <span class="ico">⌕</span>
+      <input id="kw" type="search" placeholder="搜项目名称 / 采购单位 / 代理机构" autocomplete="off">
+      <button class="clr" id="clr" hidden>×</button>
+    </div>
+    <div class="chips" id="stages"></div>
+    <div class="selrow">
+      <select id="selRegion"></select>
+      <select id="selAmt"></select>
+      <select id="selDay"></select>
+    </div>
+    <div class="fmeta">
+      <span id="fcount">—</span>
+      <span id="fsort">默认按发布时间排序</span>
+    </div>
+  </section>
+
+  <main id="main"></main>
+
+  <div class="foot">
+    快商机 · 数据源 <a href="http://www.ccgp.gov.cn/" target="_blank" rel="noopener">中国政府采购网</a><br>
+    数据为国家法定发布平台公开信息，本项目仅做商机聚合与去重，不构成投标建议
+  </div>
+</div>
+
+<nav class="nav">
+  <div class="on" data-t="all"><span>◎</span>商机</div>
+  <div data-t="warn"><span>⚑</span>预警</div>
+  <div data-t="中标结果"><span>✓</span>中标</div>
+  <div data-t="rival"><span>◫</span>对手</div>
+  <div data-t="ai"><span>✦</span>匹配</div>
+</nav>
+
+<script src="web/app.js"></script>
+</body>
+</html>
