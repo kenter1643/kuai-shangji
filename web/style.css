@@ -20,49 +20,73 @@ body{
 }
 .wrap{max-width:860px;margin:0 auto;padding:0 12px}
 
-/* ---------- header ---------- */
+/* ---------- header ----------
+   sticky 高度由 JS 写进 --hdh，筛选条据此定位，避免硬编码算错 */
 .hd{
   position:sticky;top:0;z-index:50;background:#fff;border-bottom:1px solid var(--line);
-  padding:10px 0 0;box-shadow:var(--sh);
+  padding:7px 0 0;box-shadow:var(--sh);
 }
-.hd-top{display:flex;align-items:center;gap:9px;padding:0 12px 9px}
+.hd-top{display:flex;align-items:center;gap:8px;padding:0 12px 6px}
+.hd-name{min-width:0;flex:1 1 auto}
 .logo{
-  width:32px;height:32px;border-radius:9px;flex:0 0 auto;
+  width:26px;height:26px;border-radius:8px;flex:0 0 auto;
   background:linear-gradient(135deg,#0A63D6,#0F9D76);
   display:flex;align-items:center;justify-content:center;
-  color:#fff;font-size:15px;font-weight:600;letter-spacing:-.5px;
+  color:#fff;font-size:13px;font-weight:600;letter-spacing:-.5px;
 }
-.brand{font-size:17px;font-weight:600;letter-spacing:-.3px;line-height:1.2}
+.brand{font-size:15px;font-weight:600;letter-spacing:-.3px;line-height:1.2}
 .brand em{font-style:normal;color:var(--brand)}
 .slogan{font-size:11px;color:var(--hint);letter-spacing:.2px}
 .hd-dot{
-  margin-left:auto;display:flex;align-items:center;gap:5px;font-size:11px;color:var(--sub);
-  background:var(--teal-s);padding:4px 9px;border-radius:20px;border:1px solid #CDEBDF;
+  margin-left:auto;flex:0 0 auto;display:flex;align-items:center;gap:4px;
+  font-size:10px;color:var(--sub);
+  background:var(--teal-s);padding:2px 7px;border-radius:20px;border:1px solid #CDEBDF;
 }
-.pulse{width:6px;height:6px;border-radius:50%;background:var(--teal);animation:pl 1.6s infinite}
+.pulse{width:5px;height:5px;border-radius:50%;background:var(--teal);animation:pl 1.6s infinite}
 @keyframes pl{0%,100%{opacity:1}50%{opacity:.25}}
 
-/* ---------- stats ---------- */
-.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin:11px 0}
-.st{background:var(--card);border:1px solid var(--line);border-radius:var(--r2);padding:9px 7px;text-align:center}
-.st b{display:block;font-size:18px;font-weight:600;line-height:1.25;letter-spacing:-.5px}
-.st span{font-size:11px;color:var(--hint);white-space:nowrap}
+/* ---------- stats ----------
+   手机上首屏寸土寸金：一行四格压扁，数字 15px、标签 10px */
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin:8px 0 7px}
+.st{background:var(--card);border:1px solid var(--line);border-radius:9px;padding:5px 4px;text-align:center}
+.st b{display:block;font-size:15px;font-weight:600;line-height:1.2;letter-spacing:-.4px}
+.st span{font-size:10px;color:var(--hint);white-space:nowrap;line-height:1.3}
 .st.a b{color:var(--brand)} .st.b b{color:var(--teal)}
 .st.c b{color:var(--amber)} .st.d b{color:var(--purple)}
 
 /* ---------- tabs ---------- */
-.tabs{display:flex;gap:2px;overflow-x:auto;scrollbar-width:none;padding:0 12px}
+.tabs{display:flex;gap:2px;overflow-x:auto;scrollbar-width:none;padding:0 10px}
 .tabs::-webkit-scrollbar{display:none}
 .tab{
-  flex:0 0 auto;padding:9px 13px;font-size:13px;color:var(--sub);cursor:pointer;
+  flex:0 0 auto;padding:6px 11px;font-size:12.5px;color:var(--sub);cursor:pointer;
   border-bottom:2px solid transparent;white-space:nowrap;font-weight:500;
 }
 .tab.on{color:var(--brand);border-bottom-color:var(--brand);font-weight:600}
-.tab small{font-size:10px;color:var(--hint);margin-left:3px}
+.tab small{font-size:9.5px;color:var(--hint);margin-left:2px}
 
 /* ---------- filter ---------- */
-.filter{background:#fff;border-bottom:1px solid var(--line);padding:10px 12px;position:sticky;top:96px;z-index:40}
-.srch{position:relative;margin-bottom:8px}
+.filter{background:#fff;border-bottom:1px solid var(--line);padding:0;position:sticky;top:var(--hdh,74px);z-index:40}
+/* 折叠态：一条 34px 高的工具条，点击展开完整面板 */
+.fbar{
+  display:flex;align-items:center;gap:7px;height:34px;padding:0 12px;cursor:pointer;
+  user-select:none;
+}
+.fbar:active{background:#FAFBFD}
+.fb-ico{font-size:13px;color:var(--hint);flex:0 0 auto}
+.fb-sum{
+  flex:1 1 auto;min-width:0;font-size:12.5px;color:var(--sub);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.fb-badge{
+  flex:0 0 auto;min-width:16px;height:16px;padding:0 5px;border-radius:8px;
+  background:var(--brand);color:#fff;font-size:10px;line-height:16px;text-align:center;
+}
+.fb-caret{
+  flex:0 0 auto;font-size:10px;color:var(--hint);transition:transform .18s;
+}
+.filter.open .fb-caret{transform:rotate(180deg)}
+.fpanel{padding:0 12px 10px}
+.srch{position:relative;margin:10px 0 8px}
 .srch input{
   width:100%;height:38px;border:1px solid var(--line2);border-radius:20px;
   padding:0 38px 0 34px;font-size:13px;outline:none;background:#FAFBFD;color:var(--text);

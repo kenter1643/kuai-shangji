@@ -79,6 +79,64 @@
     fillMain();
     loadStatus();
     $('#filter').style.display = '';
+    syncStickyTop();
+  }
+
+  /* 筛选条 sticky 的 top 必须等于 header 实际高度，写死数字迟早对不上
+     （字号/换行/横竖屏都会让它变），所以每次渲染后量一次写进 CSS 变量 */
+  function syncStickyTop() {
+    var hd = document.querySelector('.hd');
+    if (!hd) return;
+    var h = hd.offsetHeight || 0;
+    if (h) document.documentElement.style.setProperty('--hdh', h + 'px');
+  }
+  window.addEventListener('resize', syncStickyTop);
+
+  /* ---------- 筛选面板折叠 ----------
+     手机上首屏要留给列表，所以默认只露一条工具条；
+     有激活条件时工具条上直接显示摘要和个数，不展开也知道筛了什么 */
+  var FOPEN = false;
+  function setFilterOpen(open) {
+    FOPEN = !!open;
+    var box = $('#filter'), p = $('#fpanel');
+    if (!box || !p) return;
+    p.hidden = !FOPEN;
+    box.classList.toggle('open', FOPEN);
+    if (FOPEN) {
+      syncStickyTop();
+      var kw = $('#kw');
+      if (kw && !kw.value) { try { kw.focus(); } catch (e) { } }
+    }
+  }
+  function bindFilterBar() {
+    var bar = $('#fbar');
+    if (!bar) return;
+    bar.addEventListener('click', function () { setFilterOpen(!FOPEN); });
+  }
+
+  /* 工具条摘要：命中数 + 各类激活条件个数（收起时也能看出筛了什么） */
+  function updateFbar(sum) {
+    var el = $('#fbSum'), bg = $('#fbBadge');
+    if (!el) return;
+    var n = 0, on_ = function (s, skip) {
+      var el = $(s);
+      var v = el ? String(el.value || '') : '';
+      return v && v !== skip;               // 空串（未初始化）和默认值都不算筛选
+    };
+    if ($('#kw') && $('#kw').value.trim()) n++;
+    if (on_('#selRegion')) n++;
+    if (on_('#selAmt', '0')) n++;
+    if (on_('#selDay', '0')) n++;
+    if (on_('#selSource')) n++;
+    n += selCatCount();
+    if (n) {
+      el.textContent = sum || ('命中 ' + VIEW.length + ' 条');
+      el.style.color = 'var(--brand)';
+    } else {
+      el.textContent = '搜索 / 筛选';
+      el.style.color = '';
+    }
+    if (bg) { bg.hidden = !n; bg.textContent = n; }
   }
 
   /* 通讯录 tab 的计数从 status.json 拿（几 KB），不必拉整个通讯录文件 */
@@ -184,7 +242,9 @@
     SHOWN = PAGE;
     var nc = selCatCount();
     $('#catHit').textContent = nc ? '已选 ' + nc + ' 类' : '可多选';
-    $('#fcount').textContent = '命中 ' + VIEW.length + ' 条';
+    var sum = '命中 ' + VIEW.length + ' 条';
+    $('#fcount').textContent = sum;
+    updateFbar(sum);
     render();
   }
 
@@ -413,9 +473,12 @@
     fetch('data/contacts.json', { cache: 'no-store' })
       .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
       .then(function (j) { drawContacts(j.items || []); })
-      .catch(function () {
-        $('#main').innerHTML = '<div class="empty"><b>通讯录还没生成</b>' +
-          '跑一次 <code>--fill-content</code> 补采正文后再来看</div>';
+      .catch(function (e) {
+        /* 这里吞掉过一次真实 bug：drawContacts 内部抛异常也会落进这个 catch，
+           界面却显示「还没生成」，让人误以为是数据问题。分开提示才查得出来。 */
+        if (window.console) console.warn('[通讯录]', e);
+        $('#main').innerHTML = '<div class="empty"><b>通讯录加载失败</b>' +
+          (e && e.message ? esc(e.message) : '未知错误') + '</div>';
       });
   }
 
@@ -616,12 +679,15 @@
     });
     var listLike = (t === 'all' || t === '招标公告' || t === '中标结果');
     $('#filter').style.display = listLike ? '' : 'none';
+    /* 离开列表类视图时收起筛选面板，回到商机列表又是干净的一条工具条 */
+    if (!listLike && FOPEN) setFilterOpen(false);
     $('.stats').style.display = (t === 'rival' || t === 'ai' || t === 'warn' || t === 'contacts') ? 'none' : '';
     if (t === 'rival') { rival(); return; }
     if (t === 'contacts') { contactsView(); return; }
     if (t === 'warn') { warnView(); return; }
     if (t === 'ai') { aiPanel(); $('#fcount').textContent = '配置画像后点击匹配'; return; }
     applyFilter();
+    syncStickyTop();
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
@@ -662,4 +728,5 @@
     this.textContent = open ? '收起' : '展开全部';
   });
   $('#shClose').addEventListener('click', closeDetail);
+  bindFilterBar();
 })();
