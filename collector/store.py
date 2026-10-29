@@ -114,10 +114,25 @@ class Store:
         self.conn.execute("INSERT OR REPLACE INTO meta(k,v) VALUES(?,?)", (k, v))
         self.conn.commit()
 
-    def export(self, out_path: str) -> int:
-        cur = self.conn.execute(
-            "SELECT " + ",".join(FIELDS) + ",created_at FROM tenders ORDER BY created_at DESC")
+    def export(self, out_path: str, keep_other: bool = False) -> int:
+        """导出前端 JSON。
+
+        默认**不导出 stage='其他'**。这一档在广东源里是电子卖场合同公告 /
+        验收结果公告（占全库一半以上、7000+ 条），属于**已结束的交易记录**，
+        不是商机 —— 全量导出既拖慢 H5 首屏（7MB），也让商机列表被噪音淹没。
+        数据仍完整保留在 SQLite 里，需要时用 `--export-all` 导出即可。
+        """
+        sql = "SELECT " + ",".join(FIELDS) + ",created_at FROM tenders"
+        if not keep_other:
+            sql += " WHERE stage <> '其他'"
+        sql += " ORDER BY created_at DESC"
+        cur = self.conn.execute(sql)
         rows = [dict(zip(FIELDS + ["created_at"], r)) for r in cur.fetchall()]
+        # 空字段不落盘：绝大多数记录没有 winner/deadline/contact/phone，
+        # 全量写出会让 JSON 平白大一倍（实测 7.9M → 4.3M）。
+        # 前端 norm() 对缺失字段有默认值，读不到就当空串处理。
+        rows = [{k: v for k, v in row.items() if v not in (None, "")}
+                for row in rows]
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
         with open(out_path, "w", encoding="utf-8") as f:
             json.dump(rows, f, ensure_ascii=False, separators=(",", ":"))

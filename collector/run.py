@@ -25,26 +25,30 @@ if ROOT not in sys.path:
 from collector.base import HttpClient                       # noqa: E402
 from collector.store import Store                           # noqa: E402
 from collector.sources.ccgp import CcgpSource, REGIONS      # noqa: E402
+from collector.sources.gdgpo import GdGpoSource, REGIONS as GD_REGIONS  # noqa: E402
 
 DB = os.path.join(ROOT, "data", "tenders.db")
 OUT = os.path.join(ROOT, "data", "tenders.json")
 STATUS = os.path.join(ROOT, "data", "status.json")
 
-SOURCES = {"ccgp": (CcgpSource, REGIONS)}
+SOURCES = {
+    "ccgp": (CcgpSource, REGIONS),
+    "gdgpo": (GdGpoSource, GD_REGIONS),
+}
 
 
-def build_regions(names: str | None):
+def build_regions(names: str | None, default_regions):
     if not names or names == "all":
-        return REGIONS, [n for n, _ in REGIONS]
+        return default_regions, [n for n, _ in default_regions]
     want = [w.strip() for w in names.split(",") if w.strip()]
     sel = []
     for w in want:
-        for nm, zid in REGIONS:
+        for nm, zid in default_regions:
             if w == nm or nm.startswith(w) or w.startswith(nm[:2]) and nm.startswith(w):
                 if (nm, zid) not in sel:
                     sel.append((nm, zid))
                 break
-    return sel or REGIONS, [n for n, _ in sel or REGIONS]
+    return sel or default_regions, [n for n, _ in sel or default_regions]
 
 
 def main():
@@ -58,6 +62,9 @@ def main():
     ap.add_argument("--reset-stage", default="",
                     help="把该阶段的详情标记重置为未抓，便于用新解析逻辑重抓")
     ap.add_argument("--source", default="ccgp", choices=list(SOURCES))
+    ap.add_argument("--kw", default="", help="关键词（目前仅 gdgpo 源支持服务端检索）")
+    ap.add_argument("--export-all", action="store_true",
+                    help="导出时也包含 stage=其他（电子卖场合同/验收等已结束交易，默认排除）")
     args = ap.parse_args()
 
     client = HttpClient(delay=args.delay)
@@ -69,9 +76,7 @@ def main():
         print(f"[重置] 已将 stage={args.reset_stage} 的详情标记清空")
     src_cls, default_regions = SOURCES[args.source]
 
-    regions, region_names = build_regions(args.regions)
-    if args.regions == "all":
-        regions = default_regions
+    regions, region_names = build_regions(args.regions, default_regions)
 
     src = src_cls(client)
 
@@ -83,7 +88,9 @@ def main():
         print(f"[地区] 共 {len(regions)} 个：{'、'.join(n for n, _ in regions)[:120]}…")
         for idx, region in enumerate(regions, 1):
             try:
-                rows = src.fetch(region, pages=args.pages, max_type_pages=args.types)
+                kw = {"keyword": args.kw} if args.kw and args.source == "gdgpo" else {}
+                rows = src.fetch(region, pages=args.pages,
+                                 max_type_pages=args.types, **kw)
             except Exception as e:
                 print(f"  ✗ {region[0]} 采集异常：{type(e).__name__} {e}")
                 rows = []
@@ -111,7 +118,8 @@ def main():
                 print(f"    详情 {i}/{len(pend)}…")
         store.conn.commit()
 
-    n = store.export(OUT)
+    n = store.export(OUT, keep_other=args.export_all)
+    db_total = store.conn.execute("SELECT COUNT(*) FROM tenders").fetchone()[0]
     with_detail = store.conn.execute(
         "SELECT COUNT(*) FROM tenders WHERE detail_flag=1").fetchone()[0]
     store.set_meta("last_run", time.strftime("%Y-%m-%d %H:%M:%S"))
@@ -123,6 +131,7 @@ def main():
         "source_scope": src.scope,
         "regions_covered": region_names,
         "total_records": n,
+        "db_total": db_total,
         "new_records": total_new,
         "detail_enriched": with_detail,
         "list_seconds": round(list_sec, 1),
@@ -133,7 +142,8 @@ def main():
         json.dump(status, f, ensure_ascii=False, indent=2)
 
     print("\n" + "=" * 52)
-    print(f"采集完成 · 入库总量 {n} 条 · 本次新增 {total_new} 条")
+    print(f"采集完成 · 库内总量 {db_total} 条 · 本次新增 {total_new} 条")
+    print(f"导出前端 {n} 条" + ("" if args.export_all else "（已排除「其他」类，加 --export-all 可全量导出）"))
     print(f"详情已补齐 {with_detail} 条 · 列表耗时 {list_sec:.1f}s")
     print(f"产出：{OUT}")
     print("=" * 52)

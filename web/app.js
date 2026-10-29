@@ -35,9 +35,17 @@
       time: shortTime(t), buyer: r.buyer || '', agency: r.agency || '',
       region: r.region || '未标注', stage: r.stage || '其他', type: r.notice_type || '',
       cat: r.category_path || '', amount: r.amount || 0, winner: r.winner || '',
-      deadline: r.deadline || '', detail: !!r.detail_flag, score: 0
+      deadline: r.deadline || '', detail: !!r.detail_flag, score: 0,
+      src: r.source || '未知来源'
     };
   }
+  /* 卡片上的来源标签用短名，全名太长会把移动端标签行挤爆 */
+  var SRC_SHORT = {
+    '中国政府采购网': '央采',
+    '广东省政府采购智慧云平台': '粤采'
+  };
+  function shortSrc(s) { return SRC_SHORT[s] || s.slice(0, 6); }
+
   function shortTime(t) {
     if (!t) return '';
     var d = new Date(t);
@@ -57,6 +65,11 @@
       list.map(function (k) { return [k, k + ' (' + regs[k] + ')']; })));
     fill('#selAmt', AMTS);
     fill('#selDay', DAYS);
+    var srcs = {};
+    ALL.forEach(function (r) { srcs[r.src] = (srcs[r.src] || 0) + 1; });
+    var slist = Object.keys(srcs).sort(function (a, b) { return srcs[b] - srcs[a]; });
+    fill('#selSource', [['', '全部数据源 ' + slist.length + ' 个']].concat(
+      slist.map(function (k) { return [k, k + ' (' + srcs[k] + ')']; })));
     buildChips();
     fillMain();
     $('#filter').style.display = '';
@@ -104,11 +117,13 @@
   /* ---------- 筛选 ---------- */
   function applyFilter() {
     var kw = $('#kw').value.trim(), reg = $('#selRegion').value,
-        amt = $('#selAmt').value, day = $('#selDay').value;
+        amt = $('#selAmt').value, day = $('#selDay').value,
+        src = $('#selSource') ? $('#selSource').value : '';
     $('#clr').hidden = !kw;
     var now = Date.now(), cut = 0;
     if (day !== '0') cut = now - parseInt(day, 10) * 86400000;
     VIEW = ALL.filter(function (r) {
+      if (src && r.src !== src) return false;
       if (TAB === '招标公告' || TAB === '中标结果') { if (r.stage !== TAB) return false; }
       if (reg && r.region !== reg) return false;
       if (cut && r.ts < cut) return false;
@@ -160,6 +175,7 @@
     if (r.cat) tags += '<span class="tag">' + esc(r.cat.slice(0, 22)) + '</span>';
     if (r.amount) tags += '<span class="tag amt">预算 ' + fmtAmt(r.amount) + '</span>';
     if (r.deadline) tags += '<span class="tag dl">截止 ' + esc(String(r.deadline).slice(5)) + '</span>';
+    if (r.src) tags += '<span class="tag src">来自 ' + esc(shortSrc(r.src)) + '</span>';
 
     var meta = [];
     if (r.buyer) meta.push('采购人：' + esc(r.buyer));
@@ -373,7 +389,7 @@
       applyFilter();
     }
   });
-  ['#kw', '#selRegion', '#selAmt', '#selDay'].forEach(function (s) {
+  ['#kw', '#selRegion', '#selAmt', '#selDay', '#selSource'].forEach(function (s) {
     var el = $(s);
     el.addEventListener(s === '#kw' ? 'input' : 'change', applyFilter);
   });

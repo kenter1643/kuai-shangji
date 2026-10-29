@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-29 05:25:16",
+  "generated_at": "2026-10-29 09:35:02",
   "source": "中国政府采购网",
   "source_scope": "全国 34 省级行政区 · 政府/事业单位采购与招标",
   "regions_covered": [
@@ -36,14 +36,11 @@
     "宁夏回族自治区",
     "新疆维吾尔自治区"
   ],
-  "total_records": 1651,
-  "new_records": 455,
+  "total_records": 5851,
+  "db_total": 12923,
+  "new_records": 0,
   "detail_enriched": 409,
-  "list_seconds": 331.7,
-  "detail_done": 260,
-  "health": {
-    "status": "ok",
-    "zone_count": 1,
-    "fetched": 86
-  }
+  "list_seconds": 0.0,
+  "detail_done": 0,
+  "health": {}
 }

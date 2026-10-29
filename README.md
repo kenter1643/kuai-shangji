@@ -12,11 +12,13 @@
 
 | 数据源 | 实测结论 |
 |---|---|
-| **中国政府采购网** `search.ccgp.gov.cn/bxsearch` | ✅ **主源**。支持 `displayZone` + `zoneId` 按省级行政区分片检索，一份解析器即可覆盖全国 32 个省级区 |
+| **中国政府采购网** `search.ccgp.gov.cn/bxsearch` | ✅ **全国主源**。支持 `displayZone` + `zoneId` 按省级行政区分片检索，一份解析器覆盖全国 32 个省级区 |
+| **广东省政府采购智慧云平台** `gdgpo.czt.gd.gov.cn` | ✅ **广东主源（REST 接口）**。覆盖省本级 + 20 个地市共 237 个区县切片，列表接口直接带预算金额 |
 | 全国公共资源交易平台 `ggzy.gov.cn` | ❌ 连接超时，不可用 |
 | 省级站「新点」搜索接口 `inteligentsearch/getFullTextData` | ❌ 站点已换版，全部 404 |
 | 中国招标投标公共服务平台 `cebpubservice.com` | ⚠️ 可访问，但公开页只有通知类内容，非数据列表 |
-| 采购意向 / 需求公示 | ❌ 国家级平台未开放检索入口（见「已知限制」） |
+| 广州公共资源交易中心 `ywtb.gzggzy.cn`（工程类） | ⚠️ 站点可访问，但列表由 JS 渲染、静态 HTML 无条目，需另找接口 |
+| 采购意向 / 需求公示 | ❌ 国家级平台未开放检索入口；省平台有栏目但接口查得 0 条（见「已知限制」） |
 
 ### CCGP 的两条硬性约束（踩过的坑）
 
@@ -24,6 +26,27 @@
    建立会话 cookie，后续请求才正常。采集器在 `HttpClient.warmup()` 中处理。
 2. **请求间隔不得低于 1 秒** —— 否则触发 IP 级限流。偶发返回 0 条通常是超时，
    并非地区编码错误，重跑即可。
+
+### 广东源：`pageNo` 翻页是失效的（最重要的一个坑）
+
+实测证明服务端**完全忽略 `pageNo`**：`pageNo=1/2/3/5/10` 返回的是一模一样的
+最新 40 条（按 `noticeTime` 倒序，精度到分钟），去重后只有 41 条。
+**靠翻页拿历史数据这条路是死的。**
+
+能真正切分数据的维度是这三个，且可以互相叠加（每个切片最多回 40 条）：
+
+| 切片维度 | 说明 |
+|---|---|
+| `regionCode` | 区县代码，全省 237 个切片（省本级 + 22 市 + 215 区县） |
+| `title` | 标题关键词，服务端模糊检索，如「智能化」命中 4381 条 |
+| `noticeType` | 公告类型编码 |
+
+所以广东源的采集策略是**横向切片而非纵向翻页** —— 遍历「区县 × 关键词」矩阵，
+每个组合取最新 40 条。由此带来的一个语义差异：**`--pages N` 在广东源里是
+「每个区县跑几个关键词切片」，不是翻页数。**
+
+> 深圳市（4403）不在省平台区划表内，接口查深圳各区也全部返回 0 条 ——
+> 深圳用自己独立的采购平台，不在省云上。要覆盖深圳需另接深圳源。
 
 ---
 
@@ -47,13 +70,20 @@ python3 -m http.server 8777
 ### 常用命令
 
 ```bash
-python3 -m collector.run                          # 全量采集
+python3 -m collector.run                          # 全国全量（CCGP）
 python3 -m collector.run --regions 北京市,广东省    # 只采指定地区
-python3 -m collector.run --pages 3                 # 加大翻页深度
+python3 -m collector.run --pages 3                 # 加大翻页深度（CCGP）
 python3 -m collector.run --skip-list --detail 300  # 跳过列表，只补详情
 python3 -m collector.run --reset-stage 中标结果     # 重置某阶段详情标记以便重抓
 python3 -m collector.run --delay 2.0               # 放慢节奏（被限流时用）
+
+# 广东源：按 237 个区县切片采集，--pages 是「每个区县的关键词切片数」
+python3 -m collector.run --source gdgpo --pages 2 --detail 200
+python3 -m collector.run --source gdgpo --kw 智能化,安防   # 只跑指定关键词切片
+python3 tools/fetch_gd_regions.py                  # 刷新广东区县切片表
 ```
+
+两个源的 `--pages` 含义不同，别混用：CCGP 是翻页数，广东源是关键词切片数。
 
 ---
 
@@ -62,9 +92,15 @@ python3 -m collector.run --delay 2.0               # 放慢节奏（被限流时
 ```
 collector/                采集层
 ├── base.py               HTTP 客户端（限速/重试/会话预热）+ 招投标字段抽取
-├── sources/ccgp.py       中国政府采购网适配器（列表解析 + 详情解析）
+├── sources/
+│   ├── ccgp.py           中国政府采购网适配器（HTML 解析）
+│   ├── gdgpo.py          广东省政府采购智慧云平台适配器（REST 接口 + 区县切片）
+│   └── gd_regions.json   广东 237 个区县切片表（由 tools/fetch_gd_regions.py 生成）
 ├── store.py              SQLite 存储、去重、详情增量、导出 JSON
 └── run.py                采集入口（列表阶段 → 详情阶段）
+
+tools/
+└── fetch_gd_regions.py   从平台区划接口拉取并固化广东区县切片表
 
 web/                      前端（移动端优先单页）
 ├── style.css
