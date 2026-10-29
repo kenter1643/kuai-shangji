@@ -23,14 +23,16 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from collector.base import HttpClient                       # noqa: E402
-from collector.extract import extract_contacts, structure_of  # noqa: E402
-from collector.store import Store                           # noqa: E402
+from collector.extract import (extract_contacts, merge_contacts,      # noqa: E402
+                               structure_of)
+from collector.store import Store, DETAIL_SHARDS           # noqa: E402
 from collector.sources.ccgp import CcgpSource, REGIONS      # noqa: E402
 from collector.sources.gdgpo import GdGpoSource, REGIONS as GD_REGIONS  # noqa: E402
 
 DB = os.path.join(ROOT, "data", "tenders.db")
 OUT = os.path.join(ROOT, "data", "tenders.json")
 DETAILS = os.path.join(ROOT, "data", "details.json")
+CONTACTS = os.path.join(ROOT, "data", "contacts.json")
 STATUS = os.path.join(ROOT, "data", "status.json")
 
 SOURCES = {
@@ -44,24 +46,133 @@ def source_for_url(url: str, client: HttpClient):
     return GdGpoSource(client) if "gdgpo.czt.gd.gov.cn" in url else CcgpSource(client)
 
 
-def enrich(store: Store, src, item: dict) -> bool:
-    """抓一条详情并落库：主表补字段 + 正文 / 结构化 / 联系人三件套。"""
+def grab(src, item: dict) -> dict | None:
+    """抓一条详情（只做网络 IO，不碰数据库 —— 便于并发）。"""
     rec = src.fetch_detail(item["url"])
     if not rec:
-        return False
+        return None
     rec["id"] = item["id"]
     rec.setdefault("detail_flag", 1)      # 广东源适配器未设该标记，这里兜底
+    return rec
+
+
+def commit(store: Store, item: dict, rec: dict) -> bool:
+    """把详情落库：主表补字段 + 正文 / 结构化 / 联系人三件套。"""
     content = rec.pop("content", "") or ""
+    hint = rec.pop("structured_hint", None) or {}
+    c_hint = rec.pop("contacts_hint", None) or []
     store.upsert(rec)
-    if not content:
-        return True
     base = store.get(item["id"]) or {}
     base = {**base, **{k: v for k, v in rec.items() if v not in (None, "")}}
-    store.save_content(item["id"], content, structure_of(content, base))
-    rows = extract_contacts(content, base.get("buyer") or "",
-                            base.get("agency") or "")
+    if not content:
+        # 无正文（电子卖场类正文只是一个 PDF 附件链接）仍要把接口直给的结构化
+        # 字段和联系人存下来，否则这类公告点开是空的 —— 项目编号/金额都有价值。
+        if hint or c_hint:
+            store.save_content(item["id"], "", structure_of("", base, hint))
+            store.save_contacts(item["id"], c_hint, base)
+        return True
+    store.save_content(item["id"], content, structure_of(content, base, hint))
+    rows = merge_contacts(c_hint, extract_contacts(
+        content, base.get("buyer") or "", base.get("agency") or ""))
     store.save_contacts(item["id"], rows, base)
     return True
+
+
+def enrich(store: Store, src, item: dict) -> bool:
+    """串行版：抓一条详情并落库。"""
+    rec = grab(src, item)
+    return commit(store, item, rec) if rec else False
+
+
+def run_fill_content(store: Store, args) -> None:
+    """全量正文补采：并发抓取 + 单线程写库。
+
+    上万条历史数据串行补采要跑几小时，所以网络 IO 用线程池并发，
+    写库用一把锁串行化（SQLite 单连接不适合并发写）。
+    """
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    pend = store.pending_content(args.fill_content, include_unfetched=True)
+    if args.only_source:
+        pend = [p for p in pend if (p.get("source") or "").find(args.only_source) >= 0]
+    total = len(pend)
+    if not total:
+        print("[正文补采] 没有待补记录")
+        return
+    print(f"[正文补采] 待补 {total} 条 · 并发 {args.workers} · 间隔 {args.delay}s")
+    print("  优先级：招标公告 > 中标结果 > 变更/异常 > 前置预警 > 其他")
+
+    lock = threading.Lock()
+    local = threading.local()
+    stat = {"done": 0, "empty": 0, "fail": 0, "n": 0}
+    t0 = time.time()
+
+    def src_for(url: str):
+        """每个线程独享 HttpClient 与适配器实例（requests.Session 非线程安全）。"""
+        if not hasattr(local, "cache"):
+            local.client = HttpClient(delay=args.delay)
+            local.cache = {}
+        key = "gdgpo" if "gdgpo" in url else "ccgp"
+        if key not in local.cache:
+            local.cache[key] = source_for_url(url, local.client)
+        return local.cache[key]
+
+    def work(item: dict):
+        try:
+            rec = grab(src_for(item["url"]), item)
+            if not rec:
+                with lock:
+                    stat["fail"] += 1
+                    stat["n"] += 1
+                return
+            has_content = bool(rec.get("content") or "")
+            with lock:                       # 写库串行化
+                try:
+                    commit(store, item, rec)
+                    stat["done"] += 1
+                    if not has_content:
+                        stat["empty"] += 1
+                except Exception as e:
+                    stat["fail"] += 1
+                    print(f"    ✗ 落库 {item['id']} {type(e).__name__} {e}")
+                stat["n"] += 1
+                if stat["n"] % 50 == 0:
+                    store.conn.commit()
+                    el = time.time() - t0
+                    speed = stat["n"] / el if el else 0
+                    eta = (total - stat["n"]) / speed if speed else 0
+                    print(f"    {stat['n']}/{total} 成功{stat['done']} "
+                          f"无正文{stat['empty']} 失败{stat['fail']} · "
+                          f"{speed:.1f} 条/s · 预计还需 {eta/60:.0f} 分钟")
+        except Exception as e:
+            with lock:
+                stat["fail"] += 1
+                stat["n"] += 1
+                print(f"    ✗ {item['id']} {type(e).__name__} {e}")
+
+    with ThreadPoolExecutor(max_workers=args.workers) as pool:
+        list(pool.map(work, pend))
+
+    store.conn.commit()
+    nd = store.export_details(DETAILS, shards=DETAIL_SHARDS)
+    nc = store.export_contacts(CONTACTS)
+    store.export(OUT, keep_other=args.export_all)
+    st = store.stats()
+    store.set_meta("last_fill", time.strftime("%Y-%m-%d %H:%M:%S"))
+    # 首屏统计（通讯录 tab 的计数）从这里读，避免为了一个数字去拉通讯录文件
+    with open(STATUS, "w", encoding="utf-8") as f:
+        json.dump({"generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                   "db_total": st["total"], "with_content": st["with_content"],
+                   "contacts": st["contacts"],
+                   "contacts_with_mobile": st["with_mobile"]},
+                  f, ensure_ascii=False, indent=2)
+    print(f"\n[完成] 耗时 {(time.time()-t0)/60:.1f} 分钟 · 成功 {stat['done']} 条"
+          f"（其中仅结构化无正文 {stat['empty']} 条）· 失败 {stat['fail']} 条")
+    print(f"库内正文 {st['with_content']} 条 · 联系人 {st['contacts']} 条"
+          f"（含手机号 {st['with_mobile']}）")
+    print(f"[导出] {DETAILS[:-5]}/（{DETAIL_SHARDS} 个分片，{nd} 条）"
+          f" · {CONTACTS}（{nc} 位联系人）")
 
 
 def build_regions(names: str | None, default_regions):
@@ -98,12 +209,19 @@ def main():
                     help="配合 --backfill-category：覆盖已有分类全量重算")
     ap.add_argument("--rebuild-content", type=int, default=0,
                     help="补抓已采集详情的正文（存库 + 结构化 + 联系人）")
+    ap.add_argument("--fill-content", type=int, default=0,
+                    help="全量正文补采：把从未抓过详情的记录也抓正文（含历史数据）")
+    ap.add_argument("--workers", type=int, default=3,
+                    help="正文补采并发数（默认 3）")
+    ap.add_argument("--only-source", default="",
+                    help="配合 --fill-content：只补该数据源（如 gdgpo / ccgp）")
     ap.add_argument("--reparse", action="store_true",
                     help="不联网，用库内已有正文重算结构化信息与联系人（改抽取逻辑后用）")
     args = ap.parse_args()
 
     client = HttpClient(delay=args.delay)
-    store = Store(DB)
+    # 并发补采时工作线程要写库，必须放开 SQLite 的线程限制（写操作由锁串行化）
+    store = Store(DB, thread_safe=args.fill_content > 0)
 
     if args.backfill_category:
         n, dist = store.backfill_category(only_missing=not args.recat)
@@ -129,13 +247,18 @@ def main():
             store.save_contacts(rid, extract_contacts(content, base.get("buyer") or "",
                                                        base.get("agency") or ""), base)
         store.conn.commit()
-        nd = store.export_details(DETAILS)
+        nd = store.export_details(DETAILS, shards=DETAIL_SHARDS)
+        nc = store.export_contacts(CONTACTS)
         st = store.stats()
         store.set_meta("last_reparse", time.strftime("%Y-%m-%d %H:%M:%S"))
         store.close()
         print(f"[重解析] {len(rows)} 条正文 → 联系人 {st['contacts']} 条"
               f"（含手机号 {st['with_mobile']}）")
-        print(f"[导出] {DETAILS}（{nd} 条）")
+        print(f"[导出] {DETAILS[:-5]}/（{nd} 条） · {CONTACTS}（{nc} 位联系人）")
+        return
+
+    if args.fill_content > 0:
+        run_fill_content(store, args)
         return
 
     if args.rebuild_content > 0:
@@ -152,13 +275,14 @@ def main():
                 store.conn.commit()
                 print(f"    {i}/{len(pend)}…")
         store.conn.commit()
-        nd = store.export_details(DETAILS)
+        nd = store.export_details(DETAILS, shards=DETAIL_SHARDS)
+        nc = store.export_contacts(CONTACTS)
         st = store.stats()
         store.set_meta("last_content", time.strftime("%Y-%m-%d %H:%M:%S"))
         store.close()
         print(f"[完成] 补录正文 {done} 条 · 库内正文 {st['with_content']} 条 · "
               f"联系人 {st['contacts']} 条（含手机号 {st['with_mobile']}）")
-        print(f"[导出] {DETAILS}（{nd} 条）")
+        print(f"[导出] {DETAILS[:-5]}/（{nd} 条） · {CONTACTS}（{nc} 位联系人）")
         return
 
     if args.reset_stage:
@@ -211,7 +335,8 @@ def main():
         store.conn.commit()
 
     n = store.export(OUT, keep_other=args.export_all)
-    nd = store.export_details(DETAILS)
+    nd = store.export_details(DETAILS, shards=DETAIL_SHARDS)
+    nc = store.export_contacts(CONTACTS)
     db_total = store.conn.execute("SELECT COUNT(*) FROM tenders").fetchone()[0]
     with_detail = store.conn.execute(
         "SELECT COUNT(*) FROM tenders WHERE detail_flag=1").fetchone()[0]
@@ -247,7 +372,8 @@ def main():
     print(f"导出前端 {n} 条" + ("" if args.export_all else "（已排除「其他」类，加 --export-all 可全量导出）"))
     print(f"详情已补齐 {with_detail} 条 · 列表耗时 {list_sec:.1f}s")
     print(f"正文入库 {st['with_content']} 条 · 联系人 {st['contacts']} 条"
-          f"（含手机号 {st['with_mobile']}） · 导出 {DETAILS}（{nd} 条）")
+          f"（含手机号 {st['with_mobile']}） · 导出详情 {DETAILS[:-5]}/（{nd} 条）、"
+          f"通讯录 {nc} 位")
     print(f"产出：{OUT}")
     print("=" * 52)
 

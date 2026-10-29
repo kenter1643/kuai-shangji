@@ -79,10 +79,14 @@ python3 -m http.server 8777
 
 跨源去重仍以 URL md5 为主键；老库缺列时启动时自动 `ALTER`（含分类、正文标记）。
 
-导出两个 JSON 供 H5 读取：
+导出三份 JSON 供 H5 读取：
 
 - `data/tenders.json` —— 列表（首屏加载，3.7MB）
-- `data/details.json` —— 正文 + 结构化 + 联系人（点开详情 / 通讯录时才拉，按需加载）
+- `data/details/NN.json` —— **正文分片**：正文 + 结构化 + 联系人，按 id 的 md5
+  切成 32 片，点开哪条才拉哪一片（单片约 2MB）。全量正文合起来 70MB+，
+  做成单文件首屏根本拉不动，因此必须分片；每条记录在列表里带着自己的分片号 `sh`
+- `data/contacts.json` —— 通讯录全量（通讯录页才拉）。正文分片之后，
+  通讯录没法再从 details 聚合（那要把 70MB 全拉下来），所以单独导出一份轻量竖表
 
 ### 常用命令
 
@@ -99,8 +103,17 @@ python3 -m collector.run --source gdgpo --pages 2 --detail 200
 python3 -m collector.run --source gdgpo --kw 智能化,安防   # 只跑指定关键词切片
 python3 tools/fetch_gd_regions.py                  # 刷新广东区县切片表
 
-# 正文补录：把「已抓详情但正文未入库」的记录重抓正文（跨源自动识别）
+# 正文补采：把「从没抓过详情」的历史数据也抓正文 —— 这才是正文的主要来源
+# 并发抓取（默认 3 线程），按「正式采购项目 → 招标公告 → 中标结果」排序，
+# 电子卖场类（正文只有 PDF 链接）排最后但仍抓结构化字段
+python3 -m collector.run --fill-content 13000 --workers 6 --delay 0.3
+python3 -m collector.run --fill-content 500 --only-source 广东   # 只补广东源
+
+# 正文重抓：把「已抓详情但正文未入库」的记录重抓（跨源自动识别）
 python3 -m collector.run --rebuild-content 500
+
+# 离线重解析：不联网，用库内已有正文重算结构化与联系人（改抽取逻辑后用）
+python3 -m collector.run --reparse
 
 # 行业分类补录（不联网）
 python3 -m collector.run --backfill-category --recat
@@ -131,7 +144,8 @@ web/                      前端（移动端优先单页）
 ├── style.css
 ├── app.js                渲染、筛选、统计、详情抽屉、通讯录、预警、对手分析、匹配
 index.html                入口页面
-data/                     采集产物（tenders.db 权威源 + tenders.json / details.json 快照）
+data/                     采集产物（tenders.db 权威源 + tenders.json / contacts.json
+                          快照 + details/ 正文分片，分片不入库）
 ```
 
 ### 两阶段采集
@@ -163,7 +177,20 @@ data/                     采集产物（tenders.db 权威源 + tenders.json / d
 
 1. **平台页脚电话会混进正文**（CCGP 全国统一 `010-63819289`），不剔除会被当成项目联系人；
 2. **采购方式不能全文匹配** —— 正文常有「评审专家（**单一来源**采购人员）名单」，
-   会把公开招标误判成单一来源。优先级：正文「采购方式：」键 → 标题 → 正文开头 600 字。
+   会把公开招标误判成单一来源。优先级：正文「采购方式：」键 → 标题 → 正文开头 600 字；
+3. **广东源的详情接口自带一套完整业务字段**（`budget` / `supplierName` /
+   `purchaserLinkMan` / `agentLinkPhone` / `openTenderCode` …），比正文正则准确得多。
+   因此走「接口字段为主（`structured_hint` 最后覆盖写入）+ 正文抽取兜底」双路，
+   联系人同理（`contacts_hint` 与正文抽取结果按角色+姓名去重合并）。
+
+### 正文补采的两个坑
+
+- **电子卖场公告没有正文**：`channelName=电子卖场公告` 的响应里 `content` 只是一个
+  PDF 附件链接，接口也不给联系人字段。不能因为它没正文就整条丢弃 —— 项目编号、
+  预算金额、采购人这些结构化字段仍然有价值，照存；但排补采优先级时要沉到最后，
+  否则宝贵的请求配额会被几千条无正文记录吃掉。
+- **SQLite 的 `check_same_thread` 语义反直觉**：它是「检查是否同线程」，
+  传 `True` 恰恰是**禁止**跨线程。并发补采要放开线程限制得传 `False`。
 
 ### 行业分类识别
 

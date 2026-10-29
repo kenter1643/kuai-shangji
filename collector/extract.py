@@ -312,8 +312,13 @@ def extract_contacts(text: str, buyer: str = "", agency: str = "") -> list[dict]
     return out
 
 
-def structure_of(text: str, rec: dict | None = None) -> dict:
-    """把正文 + 已有字段汇总成结构化信息 dict（值全为字符串，便于前端直接展示）。"""
+def structure_of(text: str, rec: dict | None = None,
+                 hint: dict | None = None) -> dict:
+    """把正文 + 已有字段汇总成结构化信息 dict（值全为字符串，便于前端直接展示）。
+
+    hint 是**数据源接口直接给的结构化字段**（如广东平台的 budget / supplierName /
+    purchaserLinkMan），准确度远高于从正文正则抽取，因此最后覆盖写入。
+    """
     rec = rec or {}
     s: dict[str, str] = {}
     no = extract_project_no(text)
@@ -342,4 +347,33 @@ def structure_of(text: str, rec: dict | None = None) -> dict:
         s["采购人"] = rec["buyer"]
     if rec.get("agency"):
         s["代理机构"] = rec["agency"]
+    # 接口直给字段最后写入，覆盖正文正则抽取的猜测值
+    for k, v in (hint or {}).items():
+        if v not in (None, "", "None"):
+            s[k] = str(v)
     return s
+
+
+def merge_contacts(hint_rows: list[dict], parsed: list[dict]) -> list[dict]:
+    """合并「接口直给联系人」与「正文抽取联系人」。
+
+    同一人可能两边都出现（如采购人张三），以 (角色, 姓名) 或 (角色, 手机号) 判重，
+    接口字段在前（更可信），正文抽取作为补充。
+    """
+    out: list[dict] = []
+    seen: set[tuple] = set()
+
+    def key_of(r: dict) -> tuple | None:
+        nm, mob = (r.get("name") or "").strip(), (r.get("mobile") or "").strip()
+        tel = (r.get("phone") or "").strip()
+        if not nm and not mob and not tel:
+            return None
+        return (r.get("role") or "", nm or mob or tel)
+
+    for r in list(hint_rows or []) + list(parsed or []):
+        k = key_of(r)
+        if not k or k in seen:
+            continue
+        seen.add(k)
+        out.append(r)
+    return out

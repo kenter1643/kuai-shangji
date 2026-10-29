@@ -6,11 +6,20 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
 import time
 from typing import Iterable
+
+# 详情分片数。全量正文 60MB+，切成 32 片后单片约 2MB，点开才拉对应那一片。
+DETAIL_SHARDS = 32
+
+
+def shard_of(tid: str, shards: int = DETAIL_SHARDS) -> int:
+    """按 id 的 md5 决定详情分片号 —— 分布均匀，且与采集顺序无关。"""
+    return int(hashlib.md5(tid.encode("utf-8")).hexdigest()[:8], 16) % shards
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tenders(
@@ -87,9 +96,12 @@ from collector.classify import classify_record            # noqa: E402
 
 
 class Store:
-    def __init__(self, path: str):
+    def __init__(self, path: str, thread_safe: bool = False):
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        self.conn = sqlite3.connect(path)
+        # thread_safe=True 允许工作线程写库（并发补采时用）。
+        # 注意语义反直觉：sqlite3 的参数是 check_same_thread，
+        # 「检查同线程」=True 恰恰是**禁止**跨线程，所以要取反。
+        self.conn = sqlite3.connect(path, check_same_thread=not thread_safe)
         self.conn.executescript(SCHEMA)
         self._migrate()
         self.conn.commit()
@@ -187,12 +199,32 @@ class Store:
             n += 1
         return n
 
-    def pending_content(self, limit: int) -> list[dict]:
-        """已抓详情但还没存正文的记录（正文补录用）。"""
-        cur = self.conn.execute(
-            "SELECT id,url,source FROM tenders WHERE detail_flag=1 AND "
-            "(content_flag IS NULL OR content_flag=0) ORDER BY created_at DESC LIMIT ?",
-            (limit,))
+    def pending_content(self, limit: int, include_unfetched: bool = False) -> list[dict]:
+        """取待抓正文的记录。
+
+        include_unfetched=False（默认）：只补「已抓过详情但正文没入库」的历史欠账。
+        include_unfetched=True：把**从没抓过详情**的记录也纳入，用于全量正文补采。
+        """
+        # 电子卖场类（定点议价 / 电子卖场）正文只是一个 PDF 附件链接，接口也不给
+        # 联系人字段，价值远低于正式采购项目 —— 排到最后，但不跳过（项目编号、
+        # 预算金额、采购人这些结构化字段仍然有用）。
+        MALL = ("(title LIKE '%定点%' OR title LIKE '%电子卖场%' "
+                "OR title LIKE '%议价%')")
+        if include_unfetched:
+            # 优先级：有正文的正式项目 → 阶段重要性（招标公告 > 中标结果 >
+            # 变更/异常 > 前置预警 > 其他）→ 时间倒序
+            cur = self.conn.execute(
+                f"SELECT id,url,source FROM tenders WHERE "
+                f"(content_flag IS NULL OR content_flag=0) "
+                f"ORDER BY {MALL} ASC, (stage='招标公告') DESC, "
+                f"(stage='中标结果') DESC, (stage='变更公告') DESC, "
+                f"(stage='异常公告') DESC, (stage='前置预警') DESC, "
+                f"created_at DESC LIMIT ?", (limit,))
+        else:
+            cur = self.conn.execute(
+                "SELECT id,url,source FROM tenders WHERE detail_flag=1 AND "
+                "(content_flag IS NULL OR content_flag=0) "
+                "ORDER BY created_at DESC LIMIT ?", (limit,))
         return [{"id": r[0], "url": r[1], "source": r[2]} for r in cur.fetchall()]
 
     def get(self, tid: str) -> dict | None:
@@ -231,37 +263,95 @@ class Store:
         self.conn.commit()
         return len(rows), dist
 
-    def export_details(self, out_path: str) -> int:
+    def export_details(self, out_path: str, shards: int = 0) -> int:
         """导出详情包（正文 + 结构化信息 + 联系人），供 H5 点开详情时按需加载。
 
-        独立文件而非并入 tenders.json：正文体积是列表数据的数倍，
+        独立文件而非并入 tenders.json：正文体积是列表数据的十几倍，
         首屏只需要列表，详情等用户点开再拉。
+
+        shards>0 时**分片导出**到 out_path 所在目录下的 <out_path 去扩展名>/
+        子目录里（00.json、01.json …）。全量一万多条正文合起来有 60MB+，
+        单文件首屏拉不动，分片后点开哪条才拉哪一片（约 2MB）。
+        分片号由 id 的 md5 决定，前端从列表记录的 sh 字段直接拿，不必自己算。
         """
         cur = self.conn.execute(
             "SELECT c.id,c.content,c.structured,t.title,t.url,t.stage,t.region,"
             "t.source,t.pub_time FROM tender_content c JOIN tenders t ON t.id=c.id")
+        if shards > 0:
+            base_dir = os.path.splitext(out_path)[0]
+            os.makedirs(base_dir, exist_ok=True)
+            buckets: dict[int, dict] = {i: {} for i in range(shards)}
+            index = {}
+            for row in cur.fetchall():
+                cid = row[0]
+                k = shard_of(cid, shards)
+                buckets[k][cid] = self._detail_item(row)
+                index[cid] = k
+            total = 0
+            for k, items in buckets.items():
+                if not items:
+                    continue
+                total += len(items)
+                with open(os.path.join(base_dir, f"{k:02d}.json"), "w",
+                          encoding="utf-8") as f:
+                    json.dump({"shard": k, "count": len(items), "items": items},
+                              f, ensure_ascii=False, separators=(",", ":"))
+            with open(os.path.join(base_dir, "index.json"), "w",
+                      encoding="utf-8") as f:
+                json.dump({"generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                           "shards": shards, "count": total, "map": index},
+                          f, ensure_ascii=False, separators=(",", ":"))
+            return total
+
         items = {}
-        for cid, content, structured, title, url, stage, region, src, pub in cur.fetchall():
-            try:
-                st = json.loads(structured) if structured else {}
-            except ValueError:
-                st = {}
-            rows = self.conn.execute(
-                "SELECT role,org,name,mobile,phone,email FROM contacts "
-                "WHERE tender_id=? ORDER BY id", (cid,)).fetchall()
-            items[cid] = {
-                "t": title or "", "u": url or "", "s": stage or "",
-                "r": region or "", "src": src or "", "p": pub or "",
-                "c": content or "", "f": st,
-                "ct": [{"role": a, "org": b, "name": c, "mobile": d, "phone": e,
-                        "email": f} for a, b, c, d, e, f in rows],
-            }
+        for row in cur.fetchall():
+            items[row[0]] = self._detail_item(row)
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
         with open(out_path, "w", encoding="utf-8") as f:
             json.dump({"generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                        "count": len(items), "items": items},
                       f, ensure_ascii=False, separators=(",", ":"))
         return len(items)
+
+    def export_contacts(self, out_path: str) -> int:
+        """导出通讯录（全量联系人）。
+
+        详情正文分片之后，通讯录没法再从 details 里聚合（那要把 60MB 分片全拉下来），
+        所以单独导出一份轻量的竖表 —— 上万条也就 1MB 左右，通讯录页一次拉完。
+        """
+        cur = self.conn.execute(
+            "SELECT c.tender_id,c.role,c.org,c.name,c.mobile,c.phone,c.email,"
+            "c.title,c.region,c.source,c.pub_time FROM contacts c "
+            "JOIN tenders t ON t.id=c.tender_id "
+            "ORDER BY (c.mobile <> '') DESC, c.id DESC")
+        rows = [{
+            "id": a, "role": b or "", "org": c or "", "name": d or "",
+            "tel": (e or f or ""), "email": g or "",
+            "title": h or "", "region": i or "", "src": j or "", "p": k or "",
+        } for a, b, c, d, e, f, g, h, i, j, k in cur.fetchall()]
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump({"generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                       "count": len(rows), "items": rows},
+                      f, ensure_ascii=False, separators=(",", ":"))
+        return len(rows)
+
+    def _detail_item(self, row) -> dict:
+        cid, content, structured, title, url, stage, region, src, pub = row
+        try:
+            st = json.loads(structured) if structured else {}
+        except ValueError:
+            st = {}
+        rows = self.conn.execute(
+            "SELECT role,org,name,mobile,phone,email FROM contacts "
+            "WHERE tender_id=? ORDER BY id", (cid,)).fetchall()
+        return {
+            "t": title or "", "u": url or "", "s": stage or "",
+            "r": region or "", "src": src or "", "p": pub or "",
+            "c": content or "", "f": st,
+            "ct": [{"role": a, "org": b, "name": c, "mobile": d, "phone": e,
+                    "email": f} for a, b, c, d, e, f in rows],
+        }
 
     def count(self) -> int:
         return self.conn.execute("SELECT COUNT(*) FROM tenders").fetchone()[0]
@@ -289,7 +379,9 @@ class Store:
         has = {r[0] for r in self.conn.execute("SELECT id FROM tender_content")}
         for row in rows:
             if row["id"] in has:
+                # 分片号也要带上，前端点开详情时才知道该拉哪一片正文
                 row["cf"] = 1
+                row["sh"] = shard_of(row["id"])
         # categories 以 JSON 文本存库，导出时还原成数组给前端做多选筛选
         for row in rows:
             cats = None

@@ -37,7 +37,7 @@
       region: r.region || '未标注', stage: r.stage || '其他', type: r.notice_type || '',
       cat: r.category_path || '', amount: r.amount || 0, winner: r.winner || '',
       deadline: r.deadline || '', detail: !!r.detail_flag, score: 0,
-      src: r.source || '未知来源', hasdoc: !!r.cf,
+      src: r.source || '未知来源', hasdoc: !!r.cf, sh: r.sh,
       /* 行业分类：categories 是多标签数组，缺失时退回主分类 category */
       cats: (r.categories && r.categories.length ? r.categories
              : [r.category || '其他'].filter(Boolean))
@@ -77,7 +77,20 @@
     buildCatChips();
     buildChips();
     fillMain();
+    loadStatus();
     $('#filter').style.display = '';
+  }
+
+  /* 通讯录 tab 的计数从 status.json 拿（几 KB），不必拉整个通讯录文件 */
+  function loadStatus() {
+    fetch('data/status.json', { cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) {
+        if (!j) return;
+        var el = $('#cCt');
+        if (el && j.contacts) el.textContent = j.contacts;
+      })
+      .catch(function () { });
   }
 
   /* 行业分类多选：按当前数据量倒序铺开，标签右附命中条数 */
@@ -290,26 +303,43 @@
     return html;
   }
 
-  /* ---------- 详情数据（按需加载，不进首屏） ----------
-     details.json 里是正文 + 结构化信息 + 联系人，体积远大于列表，
-     因此不在首屏拉取，等用户点开某条公告 / 打开通讯录时才加载一次。 */
-  var DMAP = null, DLOAD = null;
-  function loadDetails(cb) {
-    if (DMAP) { cb(DMAP); return; }
-    if (DLOAD) { DLOAD.then(cb); return; }
-    DLOAD = fetch('data/details.json', { cache: 'no-store' })
+  /* ---------- 详情数据（分片按需加载，绝不进首屏） ----------
+     一万多条正文合起来 60MB+，单文件首屏拉不动。后端按 id 的 md5 切成 32 片，
+     每条记录在 tenders.json 里带着自己的分片号 sh —— 点开哪条才拉对应的那一片
+     （约 2MB），拉过就缓存在内存里，再看同片的其他公告就不用等了。 */
+  var DMAP = {}, SHARD = {}, LOADING = {};
+  function loadShard(n, cb) {
+    n = String(n);
+    if (SHARD[n]) { cb(); return; }
+    if (LOADING[n]) { LOADING[n].push(cb); return; }
+    LOADING[n] = [cb];
+    var pad = n.length < 2 ? '0' + n : n;
+    fetch('data/details/' + pad + '.json', { cache: 'no-store' })
       .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
-      .then(function (j) { DMAP = j.items || {}; $('#cCt').textContent = j.count || 0; return DMAP; })
-      .catch(function () { DMAP = {}; return DMAP; });
-    DLOAD.then(cb);
+      .then(function (j) {
+        var items = j.items || {};
+        Object.keys(items).forEach(function (k) { DMAP[k] = items[k]; });
+        SHARD[n] = 1;
+      })
+      .catch(function () { SHARD[n] = 1; })
+      .then(function () {
+        var q = LOADING[n]; delete LOADING[n];
+        q.forEach(function (fn) { fn(); });
+      });
+  }
+
+  function detailOf(rec, cb) {
+    if (rec.sh === undefined) { cb(null); return; }   // 该条没有正文
+    loadShard(rec.sh, function () { cb(DMAP[rec.id] || null); });
   }
 
   function openDetail(rec) {
-    loadDetails(function (map) {
-      var d = map[rec.id];
-      $('#sheet').hidden = false;
-      document.body.classList.add('locked');
-      $('#shLink').href = rec.url || '#';
+    $('#sheet').hidden = false;
+    document.body.classList.add('locked');
+    $('#shLink').href = rec.url || '#';
+    $('#shBody').innerHTML = '<div class="empty">正在加载正文…</div>';
+    $('#shBody').scrollTop = 0;
+    detailOf(rec, function (d) {
       $('#shBody').innerHTML = sheetHtml(rec, d);
       $('#shBody').scrollTop = 0;
       var art = $('#art');
@@ -350,10 +380,19 @@
              : '<span class="none">无电话</span>') + '</div>';
     }).join('') : '<p class="tip-empty">该公告正文里未解析出联系人。</p>';
 
-    var body = d.c ? '<div class="article fold" id="art">' + esc(d.c) + '</div>' +
-      '<button class="moreart" id="artMore">展开全文</button>'
-      : '<p class="tip-empty">正文尚未采集。执行 <code>python3 -m collector.run ' +
-        '--rebuild-content 500</code> 补抓正文，或点右上角查看原文。</p>';
+    // 三种正文状态要分开提示，否则用户会以为采集器坏了
+    var body;
+    if (d.c) {
+      body = '<div class="article fold" id="art">' + esc(d.c) + '</div>' +
+        '<button class="moreart" id="artMore">展开全文</button>';
+    } else if (kv || extra || cts.length) {
+      body = '<p class="tip-empty">该公告没有可读正文 —— 电子卖场 / 定点议价类公告的' +
+        '正文是 PDF 附件，平台接口不提供文本。上面这些信息来自平台结构化字段。' +
+        '点右上角可看原文。</p>';
+    } else {
+      body = '<p class="tip-empty">正文尚未采集。执行 <code>python3 -m collector.run ' +
+        '--fill-content 5000</code> 补采历史数据正文，或点右上角查看原文。</p>';
+    }
 
     return '<div class="sh-card">' +
         '<h3>' + esc(r.title) + '</h3>' +
@@ -370,17 +409,17 @@
   /* ---------- 通讯录 ---------- */
   function contactsView() {
     $('#main').innerHTML = '<div class="empty">正在加载联系人…</div>';
-    loadDetails(function (map) {
-      var rows = [];
-      Object.keys(map).forEach(function (id) {
-        var d = map[id];
-        (d.ct || []).forEach(function (c) {
-          if (!(c.name || c.mobile || c.phone)) return;
-          rows.push({ name: c.name || '', org: c.org || '', role: c.role || '',
-                      tel: c.mobile || c.phone || '', title: d.t || '',
-                      region: d.r || '', id: id });
-        });
+    // 通讯录走独立的轻量文件：正文分片之后，从 details 聚合要把 60MB 全拉下来
+    fetch('data/contacts.json', { cache: 'no-store' })
+      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(function (j) { drawContacts(j.items || []); })
+      .catch(function () {
+        $('#main').innerHTML = '<div class="empty"><b>通讯录还没生成</b>' +
+          '跑一次 <code>--fill-content</code> 补采正文后再来看</div>';
       });
+  }
+
+  function drawContacts(rows) {
       $('#main').innerHTML =
         '<section class="panel"><h3>项目联系人库 <small style="font-size:11px;color:var(--hint)">' +
           rows.length + ' 条</small></h3>' +
@@ -441,7 +480,6 @@
         };
       });
       draw();
-    });
   }
 
   /* ---------- 对手分析 ---------- */

@@ -63,6 +63,50 @@ CHANNEL = "fca71be5-fc0c-45db-96af-f513e9abda9d"
 KEYWORDS = ["智能化", "系统集成", "信息化", "运维", "医疗设备", "装修",
             "物业", "安防", "软件", "电梯"]
 
+
+def _to_wan(v) -> float | None:
+    """接口金额单位是元，库内统一存万元。"""
+    try:
+        f = float(str(v).replace(",", "").strip())
+    except (TypeError, ValueError):
+        return None
+    if f <= 0:
+        return None
+    return round(f / 10000, 4)
+
+
+def _wan_text(v) -> str:
+    w = _to_wan(v)
+    return f"{w} 万元" if w else ""
+
+
+def _contacts_from_fields(d: dict) -> list[dict]:
+    """从接口专用联系人字段组装联系人记录。
+
+    平台把「采购人联系人」「代理联系人」「项目联系人」分成了独立字段，
+    比从正文里正则捞准确得多，这是这个源最有价值的部分之一。
+    """
+    out = []
+
+    def push(role, org, name, tel):
+        name, tel = (name or "").strip(), (tel or "").strip()
+        if not name and not tel:
+            return
+        # 手机号 / 座机号分流：1 开头 11 位算手机
+        mob = tel if re.fullmatch(r"1[3-9]\d{9}", tel) else ""
+        phone = "" if mob else tel
+        out.append({"role": role, "org": org or "", "name": name,
+                    "mobile": mob, "phone": phone, "email": ""})
+
+    push("采购人联系人", d.get("purchaser") or "",
+         d.get("purchaserLinkMan"), d.get("purchaserLinkPhone"))
+    push("代理机构联系人", d.get("agency") or "",
+         d.get("agentLinkMan") or d.get("agentManageName"),
+         d.get("agentLinkPhone"))
+    push("项目联系人", d.get("purchaser") or "",
+         d.get("contactPerson"), d.get("contactNumber"))
+    return out
+
 _REGION_FILE = os.path.join(os.path.dirname(__file__), "gd_regions.json")
 
 # noticeType 编码 → 阶段。编码是平台内部字典，靠抽样标题反推出来的。
@@ -230,7 +274,15 @@ class GdGpoSource(BaseSource):
 
     # ---------------- 详情 ----------------
     def fetch_detail(self, url: str) -> dict | None:
-        """补中标人 / 截止时间 / 联系方式（金额列表接口已有，这里主要为中标人）。"""
+        """抓详情正文 + 抽取结构化信息。
+
+        这个接口的详情响应**自带一套完整的业务字段**（purchaser / budget /
+        supplierName / purchaserLinkMan / agentLinkPhone …），比从正文正则抽取
+        准得多，所以这里是「接口字段为主 + 正文抽取兜底」双路并用。
+
+        注意：电子卖场类公告（channelName=电子卖场公告）正文只是一个 PDF 附件
+        链接，没有可读正文 —— 这类只存接口字段，不存正文。
+        """
         m = re.search(r"id=([0-9a-zA-Z\-]+)", url)
         if not m:
             return None
@@ -239,17 +291,71 @@ class GdGpoSource(BaseSource):
         except Exception:
             return None
         data = (j or {}).get("data") or {}
-        content = data.get("content") or ""
-        if not content:
+        raw = data.get("content") or ""
+        if not raw and not data.get("purchaser"):
             return None
-        text = clean_text(content)[:12000]
-        contact = extract_contact(text)
-        return {
-            "amount": extract_amount(text),
-            "winner": extract_winner(text),
-            "deadline": extract_deadline(text),
-            "contact": contact.get("contact"),
-            "phone": contact.get("phone"),
-            # 正文保留富文本里清洗出的可读版本（HTML 版式在 H5 里没法直接渲染）
-            "content": html_to_text(content),
+        text = clean_text(raw)[:12000]
+
+        rec = {
+            "detail_flag": 1,
+            "content": html_to_text(raw) if raw else "",
         }
+        # --- 接口直给字段（优先采信）---
+        amt = _to_wan(data.get("budget") or data.get("successfulMoney"))
+        if amt:
+            rec["amount"] = amt
+        win = data.get("supplierName") or data.get("bidCompany")
+        if win:
+            rec["winner"] = win
+        buyer = data.get("purchaser") or ""
+        if buyer:
+            rec["buyer"] = buyer
+        agency = data.get("agency") or ""
+        if agency:
+            rec["agency"] = agency
+
+        hint: dict[str, str] = {}
+        if data.get("openTenderCode"):
+            hint["项目编号"] = data["openTenderCode"]
+        if data.get("purchaseMannerName"):
+            hint["采购方式"] = data["purchaseMannerName"]
+        if data.get("budget"):
+            hint["预算金额"] = _wan_text(data["budget"])
+        if data.get("successfulMoney"):
+            hint["中标金额"] = _wan_text(data["successfulMoney"])
+        if win:
+            hint["中标单位"] = win
+        if data.get("noticeEndTime"):
+            hint["投标截止"] = data["noticeEndTime"]
+            rec["deadline"] = data["noticeEndTime"]
+        if data.get("openTenderTime"):
+            hint["开标时间"] = data["openTenderTime"]
+        if data.get("openTenderPlace"):
+            hint["开标地点"] = data["openTenderPlace"]
+        if buyer:
+            hint["采购人"] = buyer
+        if agency:
+            hint["代理机构"] = agency
+        if data.get("purchaserAddr"):
+            hint["采购人地址"] = data["purchaserAddr"]
+        if data.get("projectId"):
+            hint["平台项目号"] = data["projectId"]
+        rec["structured_hint"] = hint
+
+        # --- 联系人：接口专用字段 + 正文抽取，两者合并 ---
+        rec["contacts_hint"] = _contacts_from_fields(data)
+
+        # --- 正文兜底（接口字段为空时才有意义）---
+        if text:
+            if not rec.get("amount"):
+                rec["amount"] = extract_amount(text)
+            if not rec.get("winner"):
+                rec["winner"] = extract_winner(text)
+            if not rec.get("deadline"):
+                rec["deadline"] = extract_deadline(text)
+            contact = extract_contact(text)
+            if contact.get("contact") and not rec.get("contact"):
+                rec["contact"] = contact["contact"]
+            if contact.get("phone") and not rec.get("phone"):
+                rec["phone"] = contact["phone"]
+        return rec
