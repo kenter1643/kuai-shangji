@@ -66,12 +66,15 @@ body{
 
 /* ---------- filter ---------- */
 .filter{background:#fff;border-bottom:1px solid var(--line);padding:0;position:sticky;top:var(--hdh,74px);z-index:40}
-/* 折叠态：一条 34px 高的工具条，点击展开完整面板 */
+/* 折叠态：一条 34px 高的工具条，点击展开完整面板。
+   button 要抹掉 UA 样式，否则 iOS 上会有默认圆角/灰底/居中 */
 .fbar{
-  display:flex;align-items:center;gap:7px;height:34px;padding:0 12px;cursor:pointer;
-  user-select:none;
+  display:flex;align-items:center;gap:7px;height:34px;width:100%;padding:0 12px;
+  margin:0;border:0;border-radius:0;background:#fff;color:inherit;font:inherit;
+  text-align:left;cursor:pointer;user-select:none;
+  -webkit-appearance:none;appearance:none;touch-action:manipulation;
 }
-.fbar:active{background:#FAFBFD}
+.fbar:active,.fbar:focus{background:#FAFBFD;outline:none}
 .fb-ico{font-size:13px;color:var(--hint);flex:0 0 auto}
 .fb-sum{
   flex:1 1 auto;min-width:0;font-size:12.5px;color:var(--sub);
@@ -85,7 +88,9 @@ body{
   flex:0 0 auto;font-size:10px;color:var(--hint);transition:transform .18s;
 }
 .filter.open .fb-caret{transform:rotate(180deg)}
-.fpanel{padding:0 12px 10px}
+/* 面板展开改由 class 控制：display 单一来源，Safari 不会漏重绘 */
+.fpanel{display:none;padding:0 12px 10px}
+.filter.open .fpanel{display:block}
 .srch{position:relative;margin:10px 0 8px}
 .srch input{
   width:100%;height:38px;border:1px solid var(--line2);border-radius:20px;

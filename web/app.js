@@ -92,6 +92,12 @@
     if (h) document.documentElement.style.setProperty('--hdh', h + 'px');
   }
   window.addEventListener('resize', syncStickyTop);
+  /* 横竖屏切换后 header 会换行/变高，sticky 的 top 必须跟着重算，
+     否则筛选条会被 header 盖住一截，看着就像点不动 */
+  window.addEventListener('orientationchange', function () {
+    setTimeout(syncStickyTop, 120);
+  });
+  window.addEventListener('load', syncStickyTop);
 
   /* ---------- 筛选面板折叠 ----------
      手机上首屏要留给列表，所以默认只露一条工具条；
@@ -99,21 +105,42 @@
   var FOPEN = false;
   function setFilterOpen(open) {
     FOPEN = !!open;
-    var box = $('#filter'), p = $('#fpanel');
-    if (!box || !p) return;
-    p.hidden = !FOPEN;
+    var box = $('#filter'), p = $('#fpanel'), bar = $('#fbar');
+    if (!box) return;
+    /* 展开状态只由 .filter.open 决定（CSS 里 .fpanel 的 display 跟着它）。
+       这里不能再用 p.hidden —— 两套开关并存时，残留一次 hidden 面板就再也点不开 */
     box.classList.toggle('open', FOPEN);
+    if (p) p.hidden = false;
+    if (bar) bar.setAttribute('aria-expanded', FOPEN ? 'true' : 'false');
     if (FOPEN) {
       syncStickyTop();
-      var kw = $('#kw');
-      if (kw && !kw.value) { try { kw.focus(); } catch (e) { } }
+      /* sticky 容器变高时 Safari 常把面板留在视口外，展开后主动把它拉回视野；
+         不自动 focus 搜索框——手机上键盘一弹出就把面板顶没了，看着像“点不出来” */
+      setTimeout(function () {
+        var hd = document.querySelector('.hd');
+        var hdH = hd ? hd.offsetHeight : 0;
+        var r = box.getBoundingClientRect();
+        if (r.top < hdH || r.top > window.innerHeight - 80) {
+          try {
+            window.scrollBy({ top: r.top - hdH - 4, behavior: 'smooth' });
+          } catch (err) {
+            window.scrollBy(0, r.top - hdH - 4);   /* 老 Safari 不接受对象参数 */
+          }
+        }
+        void box.offsetHeight;            /* 读一次布局，触发 Safari 重绘 */
+      }, 0);
     }
   }
+  /* 折叠条用事件委托挂在 document 上，并且尽早绑定：
+     这样即使后面某段初始化抛错，搜索和筛选也不会整体失灵 */
   function bindFilterBar() {
-    var bar = $('#fbar');
-    if (!bar) return;
-    bar.addEventListener('click', function () { setFilterOpen(!FOPEN); });
+    document.addEventListener('click', function (e) {
+      if (!e.target || !e.target.closest) return;
+      if (!e.target.closest('#fbar')) return;
+      setFilterOpen(!FOPEN);
+    });
   }
+  bindFilterBar();
 
   /* 工具条摘要：命中数 + 各类激活条件个数（收起时也能看出筛了什么） */
   function updateFbar(sum) {
@@ -828,5 +855,5 @@
     this.textContent = open ? '收起' : '展开全部';
   });
   $('#shClose').addEventListener('click', closeDetail);
-  bindFilterBar();
+  /* bindFilterBar 已在定义处绑定（事件委托，早于其余初始化），此处不再重复调用 */
 })();

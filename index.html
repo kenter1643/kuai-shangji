@@ -6,7 +6,8 @@
 <meta name="theme-color" content="#0A63D6">
 <meta name="description" content="快商机 — 覆盖全国34个省级行政区的招投标商机发现控制台">
 <title>快商机 · 全国项目商机系统</title>
-<link rel="stylesheet" href="web/style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%230A63D6'/%3E%3Ctext x='32' y='45' font-size='40' font-family='sans-serif' font-weight='bold' fill='white' text-anchor='middle'%3EK%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="web/style.css?v=20261029b">
 </head>
 <body>
 
@@ -36,13 +37,17 @@
   <!-- 筛选区：商机类视图共用。默认只露一条工具条，点击展开完整面板，
        把首屏留给列表（手机上一屏能看到更多商机） -->
   <section class="filter" id="filter">
-    <div class="fbar" id="fbar" role="button" tabindex="0">
+    <!-- 用真正的 button：iOS Safari 对 div/span 上的 click 派发有历史坑，
+         换成原生可点击元素后，点击与无障碍都交给浏览器，不再依赖 cursor:pointer 推断 -->
+    <button class="fbar" id="fbar" type="button" aria-expanded="false" aria-controls="fpanel">
       <span class="fb-ico">⌕</span>
       <span class="fb-sum" id="fbSum">搜索 / 筛选</span>
       <span class="fb-badge" id="fbBadge" hidden>0</span>
       <span class="fb-caret">▾</span>
-    </div>
-    <div class="fpanel" id="fpanel" hidden>
+    </button>
+    <!-- 展开由 .filter.open 控制（CSS 单一来源），不用 hidden 属性：
+         Safari 在 sticky 容器里切 hidden 有时不重绘，表现为“点了没反应” -->
+    <div class="fpanel" id="fpanel">
       <div class="srch">
         <span class="ico">⌕</span>
         <input id="kw" type="search" placeholder="搜项目名称 / 采购单位 / 代理机构" autocomplete="off">
@@ -101,7 +106,7 @@
   <div class="sheet-bd" id="shBody"></div>
 </div>
 
-<script src="web/store.js"></script>
-<script src="web/app.js"></script>
+<script src="web/store.js?v=20261029b"></script>
+<script src="web/app.js?v=20261029b"></script>
 </body>
 </html>
