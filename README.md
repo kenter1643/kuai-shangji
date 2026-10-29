@@ -142,6 +142,7 @@ tools/
 
 web/                      前端（移动端优先单页）
 ├── style.css
+├── store.js              数据层：收藏 / 企业画像 / 浏览记录（见「数据层与云服务」）
 ├── app.js                渲染、筛选、统计、详情抽屉、通讯录、预警、对手分析、匹配
 index.html                入口页面
 data/                     采集产物（tenders.db 权威源 + tenders.json / contacts.json
@@ -270,6 +271,37 @@ python3 -m collector.run --backfill-category --recat   # 词典大改后全量�
 
 ---
 
+## 数据层与云服务
+
+### 当前状态：未开通（本地实现）
+
+云服务的开通确认在弹窗中被取消，没有拿到 `publicConfig`，**因此没有接入真实云端**。
+按平台指示改为本地实现，全部读写收敛在 `web/store.js`：
+
+```js
+KSJStore.fav.toggle(rec)     // 收藏 / 取消收藏，返回收藏后状态
+KSJStore.fav.all() / has(id) / remove(id) / count()
+KSJStore.profile.get() / set(p)   // AI 匹配用的企业画像
+KSJStore.hist.push(rec) / all()   // 最近浏览（最多 50 条）
+```
+
+底层是 `localStorage`（键前缀 `ksj_`），带 try/catch 降级 ——
+无痕模式或存储被禁用时不会崩页面，只是当次会话不留存。
+
+**代价要说清楚**：数据只在这台设备的浏览器里，换设备、换浏览器、清缓存、无痕模式都会丢，
+也没法多端同步。
+
+### 开通云服务后的迁移点
+
+只有 `web/store.js` 里的 `read()` / `write()` 需要改，上层 UI 一行都不用动：
+
+1. 把 `fav` / `profile` / `hist` 三张表建到云数据库，每条记录带 `userId`；
+2. `all()` 换成带身份约束的查询（**不能让一个用户读到另一个用户的数据**）；
+3. 客户端用 `publicConfig` 的 `endpoint` + `publishableKey` 初始化，
+   不要把端点写死在代码里 —— 重新发布后域名会变，服务端是精确 Origin 校验。
+
+收藏目前存的是「id + 关键字段快照」：只存 id 的话，公告从列表下线后就渲染不出来了。
+
 ## 已知限制
 
 1. **采购意向（立项前置信息）尚未接入。** 国家级平台没有开放采购意向检索，
@@ -281,6 +313,8 @@ python3 -m collector.run --backfill-category --recat   # 词典大改后全量�
    如需语义级匹配可再接入 LLM。
 4. **详情覆盖率受配额限制。** 金额、中标人等字段只存在于正文，
    提高 `--detail` 配额可提升覆盖率。
+5. **收藏 / 画像存在浏览器本地，不是云端。** 见上一节「数据层与云服务」——
+   云服务未开通，换设备或清缓存会丢。
 
 ---
 

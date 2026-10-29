@@ -129,6 +129,22 @@ select{
 }
 .cd.warn{border-left:3px solid var(--amber)}
 .cd.win{border-left:3px solid var(--teal)}
+/* 收藏按钮：右上角，触控区放大到 32px，避免手机上点不中 */
+.cd .fav{
+  position:absolute;top:6px;right:6px;width:32px;height:32px;line-height:30px;text-align:center;
+  border:none;background:transparent;color:var(--line2);font-size:17px;cursor:pointer;
+  border-radius:8px;padding:0;
+}
+.cd .fav:active{background:var(--line)}
+.cd .fav.on{color:var(--amber)}
+/* AI 匹配视图右上角是匹配度徽标，收藏按钮左移让位 */
+.cd.has-score .fav{right:54px}
+.sh-fav{
+  display:block;width:100%;height:34px;margin-top:8px;border:1px solid var(--line2);
+  border-radius:9px;background:#fff;color:var(--sub);font-size:13px;cursor:pointer;
+}
+.sh-fav:active{background:var(--line)}
+.sh-fav.on{background:var(--amber-s);border-color:#EFC98A;color:var(--amber);font-weight:500}
 .cd-t{font-size:14px;font-weight:500;line-height:1.5;margin:0 0 7px;color:var(--text);
   display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .cd-t a{color:inherit;text-decoration:none}

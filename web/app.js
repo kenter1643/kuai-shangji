@@ -79,6 +79,7 @@
     fillMain();
     loadStatus();
     $('#filter').style.display = '';
+    refreshFavCount();
     syncStickyTop();
   }
 
@@ -260,15 +261,39 @@
     $('#main').innerHTML = html;
     var m = $('#more');
     if (m) m.onclick = function () { SHOWN += PAGE; render(); };
-    /* 标题点击 → 打开详情抽屉（原文链接仍在抽屉右上角） */
-    Array.prototype.forEach.call($('#main').querySelectorAll('.cd-t a'), function (a) {
+    bindCardLinks('#main');
+  }
+
+  /* 卡片上的两种点击：标题 → 详情抽屉；☆ → 收藏。
+     抽出来给收藏夹/预警等自建列表复用。 */
+  function bindCardLinks(sel) {
+    var box = $(sel);
+    if (!box || !box.querySelectorAll) return;
+    Array.prototype.forEach.call(box.querySelectorAll('.cd-t a'), function (a) {
       a.onclick = function (e) {
         if (e.metaKey || e.ctrlKey) return;      // 保留「新标签打开原文」
         e.preventDefault();
         var id = a.getAttribute('data-id');
-        for (var i = 0; i < VIEW.length; i++) {
-          if (VIEW[i].id === id) { openDetail(VIEW[i]); return; }
+        var pool = (TAB === 'fav') ? null : VIEW;
+        if (!pool) {
+          for (var j = 0; j < ALL.length; j++) {
+            if (ALL[j].id === id) { openDetail(ALL[j]); return; }
+          }
+          return;
         }
+        for (var i = 0; i < pool.length; i++) {
+          if (pool[i].id === id) { openDetail(pool[i]); return; }
+        }
+      };
+    });
+    Array.prototype.forEach.call(box.querySelectorAll('.fav'), function (b) {
+      b.onclick = function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        var id = b.getAttribute('data-fav');
+        var on = toggleFav(id);
+        b.classList.toggle('on', on);
+        b.textContent = on ? '★' : '☆';
       };
     });
   }
@@ -302,11 +327,67 @@
 
     return '<article class="cd ' + cls + '">' +
       (withScore ? '<div class="score"><b>' + r.score + '</b><span>匹配度</span></div>' : '') +
+      '<button class="fav' + (isFav(r.id) ? ' on' : '') + '" data-fav="' + esc(r.id) +
+        '" type="button" aria-label="收藏">' + (isFav(r.id) ? '★' : '☆') + '</button>' +
       '<h3 class="cd-t"><a href="' + esc(r.url) + '" data-id="' + esc(r.id) +
         '" target="_blank" rel="noopener">' + title + '</a></h3>' +
       '<div class="tags">' + tags + '</div>' +
       '<div class="meta">' + meta.map(function (t) { return '<span>' + t + '</span>'; }).join('') + '</div>' +
       '</article>';
+  }
+
+  /* ---------- 收藏 ----------
+     读写都走 KSJStore 数据层：现在落在 localStorage，
+     云服务开通后换成云数据库，这里一行都不用改。 */
+  function isFav(id) {
+    return !!(window.KSJStore && KSJStore.fav.has(id));
+  }
+  function toggleFav(id) {
+    if (!window.KSJStore) return false;
+    var rec = null;
+    for (var i = 0; i < ALL.length; i++) { if (ALL[i].id === id) { rec = ALL[i]; break; } }
+    if (!rec) {
+      // 收藏夹里可能有列表已下线的记录，用快照兜底
+      var s = KSJStore.fav.all().filter(function (r) { return r.id === id; })[0];
+      if (!s) return false;
+      KSJStore.fav.remove(id);
+      return false;
+    }
+    var on = KSJStore.fav.toggle(rec);
+    refreshFavCount();
+    return on;
+  }
+  function refreshFavCount() {
+    var n = window.KSJStore ? KSJStore.fav.count() : 0;
+    var el = $('#cFav');
+    if (el) el.textContent = n;
+  }
+  function favView() {
+    var rows = (window.KSJStore ? KSJStore.fav.all() : []);
+    if (!rows.length) {
+      $('#main').innerHTML = '<div class="empty"><b>还没有收藏</b>' +
+        '在商机列表里点卡片右上角的 ☆ 就能收藏，之后在这里随时回看</div>';
+      return;
+    }
+    /* 优先用列表里的活数据（字段最新），找不到再用收藏时的快照 */
+    var live = {};
+    ALL.forEach(function (r) { live[r.id] = r; });
+    var recs = rows.map(function (s) {
+      var r = live[s.id];
+      if (r) return r;
+      return {
+        id: s.id, title: s.title, url: s.url, region: s.region, stage: s.stage,
+        src: s.src, amount: s.amount, time: s.time, ts: s.ts, buyer: s.buyer,
+        cats: s.cats || [], type: '', cat: '', agency: '', winner: '', deadline: '',
+        detail: false, hasdoc: false, score: 0
+      };
+    });
+    $('#main').innerHTML =
+      '<section class="panel"><h3>我的收藏 <small style="font-size:11px;color:var(--hint)">' +
+        recs.length + ' 条</small></h3>' +
+        '<p class="tip">数据当前保存在本机浏览器（云服务未开通），换设备或清缓存会丢失。</p></section>' +
+      '<div class="list">' + recs.map(function (r) { return card(r, false); }).join('') + '</div>';
+    bindCardLinks('#main');
   }
 
   /* ---------- 机会预警 ----------
@@ -394,6 +475,7 @@
   }
 
   function openDetail(rec) {
+    if (window.KSJStore) KSJStore.hist.push(rec);
     $('#sheet').hidden = false;
     document.body.classList.add('locked');
     $('#shLink').href = rec.url || '#';
@@ -402,6 +484,18 @@
     detailOf(rec, function (d) {
       $('#shBody').innerHTML = sheetHtml(rec, d);
       $('#shBody').scrollTop = 0;
+      /* 抽屉里也给一个收藏开关：看过正文才决定要不要跟 */
+      var fb = $('#shFav');
+      if (fb) {
+        var on = isFav(rec.id);
+        fb.classList.toggle('on', on);
+        fb.textContent = on ? '★ 已收藏' : '☆ 收藏';
+        fb.onclick = function () {
+          var now = toggleFav(rec.id);
+          fb.classList.toggle('on', now);
+          fb.textContent = now ? '★ 已收藏' : '☆ 收藏';
+        };
+      }
       var art = $('#art');
       var btn = $('#artMore');
       if (btn) btn.onclick = function () {
@@ -458,6 +552,7 @@
         '<h3>' + esc(r.title) + '</h3>' +
         '<div class="sh-sub"><span>' + esc(r.stage) + '</span><span>' + esc(r.region) + '</span>' +
         '<span>' + esc(r.time || (r.pub_time || '')) + '</span><span>' + esc(shortSrc(r.src)) + '</span></div>' +
+        '<button class="sh-fav" id="shFav" type="button">☆ 收藏</button>' +
         (kv || extra ? '<div class="sh-sec">结构化信息 <span>从公告正文解析</span></div>' +
           '<dl class="kv">' + kv + extra + '</dl>' : '') +
       '</div>' +
@@ -597,9 +692,13 @@
 
   /* ---------- AI 商机匹配 ---------- */
   function loadProfile() {
+    if (window.KSJStore) return KSJStore.profile.get();
     try { return JSON.parse(localStorage.getItem('ksj_profile') || '{}'); } catch (e) { return {}; }
   }
-  function saveProfile(p) { localStorage.setItem('ksj_profile', JSON.stringify(p)); }
+  function saveProfile(p) {
+    if (window.KSJStore) { KSJStore.profile.set(p); return; }
+    localStorage.setItem('ksj_profile', JSON.stringify(p));
+  }
 
   function aiPanel() {
     var p = loadProfile();
@@ -681,8 +780,9 @@
     $('#filter').style.display = listLike ? '' : 'none';
     /* 离开列表类视图时收起筛选面板，回到商机列表又是干净的一条工具条 */
     if (!listLike && FOPEN) setFilterOpen(false);
-    $('.stats').style.display = (t === 'rival' || t === 'ai' || t === 'warn' || t === 'contacts') ? 'none' : '';
+    $('.stats').style.display = (t === 'rival' || t === 'ai' || t === 'warn' || t === 'contacts' || t === 'fav') ? 'none' : '';
     if (t === 'rival') { rival(); return; }
+    if (t === 'fav') { favView(); return; }
     if (t === 'contacts') { contactsView(); return; }
     if (t === 'warn') { warnView(); return; }
     if (t === 'ai') { aiPanel(); $('#fcount').textContent = '配置画像后点击匹配'; return; }
