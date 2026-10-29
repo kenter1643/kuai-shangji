@@ -65,10 +65,26 @@ def main():
     ap.add_argument("--kw", default="", help="关键词（目前仅 gdgpo 源支持服务端检索）")
     ap.add_argument("--export-all", action="store_true",
                     help="导出时也包含 stage=其他（电子卖场合同/验收等已结束交易，默认排除）")
+    ap.add_argument("--backfill-category", action="store_true",
+                    help="只做行业分类补录（不联网），可用 --recat 全量重算")
+    ap.add_argument("--recat", action="store_true",
+                    help="配合 --backfill-category：覆盖已有分类全量重算")
     args = ap.parse_args()
 
     client = HttpClient(delay=args.delay)
     store = Store(DB)
+
+    if args.backfill_category:
+        n, dist = store.backfill_category(only_missing=not args.recat)
+        out = store.export(OUT, keep_other=args.export_all)
+        store.set_meta("last_classify", time.strftime("%Y-%m-%d %H:%M:%S"))
+        store.close()
+        print(f"[分类补录] 重算 {n} 条（{'全量' if args.recat else '仅空分类'}）")
+        for k, v in sorted(dist.items(), key=lambda kv: -kv[1]):
+            print(f"    {k:<12} {v:>6}")
+        print(f"[导出] {OUT}（{out} 条）")
+        return
+
     if args.reset_stage:
         store.conn.execute("UPDATE tenders SET detail_flag=0 WHERE stage=?",
                            (args.reset_stage,))
@@ -122,6 +138,9 @@ def main():
     db_total = store.conn.execute("SELECT COUNT(*) FROM tenders").fetchone()[0]
     with_detail = store.conn.execute(
         "SELECT COUNT(*) FROM tenders WHERE detail_flag=1").fetchone()[0]
+    cat_dist = dict(store.conn.execute(
+        "SELECT category, COUNT(*) FROM tenders WHERE category IS NOT NULL "
+        "AND stage<>'其他' GROUP BY category").fetchall())
     store.set_meta("last_run", time.strftime("%Y-%m-%d %H:%M:%S"))
     store.close()
 
@@ -137,6 +156,7 @@ def main():
         "list_seconds": round(list_sec, 1),
         "detail_done": detail_done,
         "health": src.health,
+        "categories": cat_dist,
     }
     with open(STATUS, "w", encoding="utf-8") as f:
         json.dump(status, f, ensure_ascii=False, indent=2)

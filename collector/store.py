@@ -32,6 +32,8 @@ CREATE TABLE IF NOT EXISTS tenders(
     contact       TEXT,
     phone         TEXT,
     detail_flag   INTEGER DEFAULT 0,
+    category      TEXT,
+    categories    TEXT,
     created_at    INTEGER,
     updated_at    INTEGER
 );
@@ -45,7 +47,14 @@ CREATE TABLE IF NOT EXISTS meta(
 
 FIELDS = ["id", "title", "url", "pub_time", "buyer", "agency", "notice_type",
           "category_path", "region", "stage", "source", "source_type", "amount",
-          "winner", "deadline", "contact", "phone", "detail_flag"]
+          "winner", "deadline", "contact", "phone", "detail_flag",
+          "category", "categories"]
+
+# 老库没有分类字段，启动即补列，避免手工删库重采
+MIGRATIONS = [("category", "TEXT"), ("categories", "TEXT")]
+
+
+from collector.classify import classify_record            # noqa: E402
 
 
 class Store:
@@ -53,11 +62,23 @@ class Store:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         self.conn = sqlite3.connect(path)
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self):
+        have = {r[1] for r in self.conn.execute("PRAGMA table_info(tenders)")}
+        for col, typ in MIGRATIONS:
+            if col not in have:
+                self.conn.execute(f"ALTER TABLE tenders ADD COLUMN {col} {typ}")
+        # 索引必须等列补上之后再建，否则老库建索引会报 no such column
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_cat ON tenders(category)")
 
     def upsert(self, rec: dict) -> bool:
         """插入或补全。返回 True 表示新增记录。"""
         now = int(time.time())
+        # 入库即分类：列表阶段就能定类，详情补抓只影响金额/中标人等字段
+        if not rec.get("category"):
+            rec["category"], rec["categories"] = classify_record(rec)
         cur = self.conn.execute("SELECT id FROM tenders WHERE id=?", (rec["id"],))
         existed = cur.fetchone() is not None
         if existed:
@@ -107,6 +128,27 @@ class Store:
                 "ORDER BY created_at DESC LIMIT ?", (limit,))
         return [{"id": r[0], "url": r[1]} for r in cur.fetchall()]
 
+    def backfill_category(self, only_missing: bool = True) -> tuple[int, dict]:
+        """分类补录：对历史数据重算行业分类。
+
+        only_missing=True 只补空分类（词典小改后的增量场景）；
+        False 则全量重算（词典大改后的整体刷新）。返回 (更新条数, 类目分布)。
+        """
+        sql = "SELECT id,title,buyer,agency,category FROM tenders"
+        if only_missing:
+            sql += " WHERE category IS NULL OR category=''"
+        rows = self.conn.execute(sql).fetchall()
+        dist: dict[str, int] = {}
+        for rid, title, buyer, agency, _ in rows:
+            cat, cats = classify_record({"title": title, "buyer": buyer,
+                                         "agency": agency})
+            self.conn.execute(
+                "UPDATE tenders SET category=?, categories=? WHERE id=?",
+                (cat, cats, rid))
+            dist[cat] = dist.get(cat, 0) + 1
+        self.conn.commit()
+        return len(rows), dist
+
     def count(self) -> int:
         return self.conn.execute("SELECT COUNT(*) FROM tenders").fetchone()[0]
 
@@ -128,10 +170,23 @@ class Store:
         sql += " ORDER BY created_at DESC"
         cur = self.conn.execute(sql)
         rows = [dict(zip(FIELDS + ["created_at"], r)) for r in cur.fetchall()]
+        # categories 以 JSON 文本存库，导出时还原成数组给前端做多选筛选
+        for row in rows:
+            cats = None
+            if row.get("categories"):
+                try:
+                    cats = json.loads(row["categories"])
+                except ValueError:
+                    cats = None
+            if not cats:
+                cats = [row.get("category") or "其他"]
+            # 单标签时不重复写数组，省体积（前端按 category 兜底）
+            row["categories"] = [] if len(cats) <= 1 else cats
         # 空字段不落盘：绝大多数记录没有 winner/deadline/contact/phone，
         # 全量写出会让 JSON 平白大一倍（实测 7.9M → 4.3M）。
         # 前端 norm() 对缺失字段有默认值，读不到就当空串处理。
-        rows = [{k: v for k, v in row.items() if v not in (None, "")}
+        rows = [{k: v for k, v in row.items()
+                 if v not in (None, "") and not (k == "categories" and not v)}
                 for row in rows]
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
         with open(out_path, "w", encoding="utf-8") as f:

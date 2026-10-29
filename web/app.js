@@ -4,6 +4,7 @@
 (function () {
   'use strict';
   var ALL = [], VIEW = [], TAB = 'all', PAGE = 40, SHOWN = 40;
+  var SELCAT = {};   /* 行业分类多选：{分类名: true} —— 命中任一即保留（并集） */
   var $ = function (s) { return document.querySelector(s); };
   var esc = function (s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
     return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); };
@@ -36,7 +37,10 @@
       region: r.region || '未标注', stage: r.stage || '其他', type: r.notice_type || '',
       cat: r.category_path || '', amount: r.amount || 0, winner: r.winner || '',
       deadline: r.deadline || '', detail: !!r.detail_flag, score: 0,
-      src: r.source || '未知来源'
+      src: r.source || '未知来源',
+      /* 行业分类：categories 是多标签数组，缺失时退回主分类 category */
+      cats: (r.categories && r.categories.length ? r.categories
+             : [r.category || '其他'].filter(Boolean))
     };
   }
   /* 卡片上的来源标签用短名，全名太长会把移动端标签行挤爆 */
@@ -70,9 +74,31 @@
     var slist = Object.keys(srcs).sort(function (a, b) { return srcs[b] - srcs[a]; });
     fill('#selSource', [['', '全部数据源 ' + slist.length + ' 个']].concat(
       slist.map(function (k) { return [k, k + ' (' + srcs[k] + ')']; })));
+    buildCatChips();
     buildChips();
     fillMain();
     $('#filter').style.display = '';
+  }
+
+  /* 行业分类多选：按当前数据量倒序铺开，标签右附命中条数 */
+  function buildCatChips() {
+    var cnt = {};
+    ALL.forEach(function (r) { r.cats.forEach(function (c) { cnt[c] = (cnt[c] || 0) + 1; }); });
+    var list = Object.keys(cnt).sort(function (a, b) {
+      return cnt[b] - cnt[a] || (a < b ? -1 : 1);
+    });
+    $('#cats').innerHTML = list.map(function (k) {
+      return '<span class="chip" data-cat="' + esc(k) + '">' + esc(k) +
+        '<i>' + cnt[k] + '</i></span>';
+    }).join('');
+  }
+  function selCatCount() {
+    return Object.keys(SELCAT).filter(function (k) { return SELCAT[k]; }).length;
+  }
+  function hitCat(r) {
+    var n = selCatCount(); if (!n) return true;
+    for (var i = 0; i < r.cats.length; i++) { if (SELCAT[r.cats[i]]) return true; }
+    return false;
   }
 
   function buildChips() {
@@ -124,6 +150,7 @@
     if (day !== '0') cut = now - parseInt(day, 10) * 86400000;
     VIEW = ALL.filter(function (r) {
       if (src && r.src !== src) return false;
+      if (!hitCat(r)) return false;
       if (TAB === '招标公告' || TAB === '中标结果') { if (r.stage !== TAB) return false; }
       if (reg && r.region !== reg) return false;
       if (cut && r.ts < cut) return false;
@@ -142,6 +169,8 @@
     if (TAB === 'ai') scoreAll();
     else VIEW.sort(function (a, b) { return b.ts - a.ts; });
     SHOWN = PAGE;
+    var nc = selCatCount();
+    $('#catHit').textContent = nc ? '已选 ' + nc + ' 类' : '可多选';
     $('#fcount').textContent = '命中 ' + VIEW.length + ' 条';
     render();
   }
@@ -170,8 +199,11 @@
       title = title.split(esc(w)).join('<mark>' + esc(w) + '</mark>');
     });
     var tags = '<span class="tag st-' + esc(r.stage) + '">' + esc(r.stage) + '</span>' +
+      (r.cats.length ? r.cats.map(function (c, i) {
+        return '<span class="tag ' + (i ? 'cat2' : 'cat') + '">' + esc(c) + '</span>';
+      }).join('') : '') +
       '<span class="tag">' + esc(r.region) + '</span>';
-    if (r.type) tags += '<span class="tag">' + esc(r.type) + '</span>';
+    if (r.type && r.type.length < 12) tags += '<span class="tag">' + esc(r.type) + '</span>';
     if (r.cat) tags += '<span class="tag">' + esc(r.cat.slice(0, 22)) + '</span>';
     if (r.amount) tags += '<span class="tag amt">预算 ' + fmtAmt(r.amount) + '</span>';
     if (r.deadline) tags += '<span class="tag dl">截止 ' + esc(String(r.deadline).slice(5)) + '</span>';
@@ -246,6 +278,13 @@
   }
 
   /* ---------- 对手分析 ---------- */
+  /* 多标签计数：一条公告挂在多个赛道下，各赛道各计一次 */
+  function catRank() {
+    var m = {};
+    ALL.forEach(function (r) { r.cats.forEach(function (c) { m[c] = (m[c] || 0) + 1; }); });
+    return Object.keys(m).map(function (k) { return [k, m[k]]; })
+      .sort(function (a, b) { return b[1] - a[1]; }).slice(0, 10);
+  }
   function rival() {
     var cnt = function (key, filter) {
       var m = {};
@@ -268,6 +307,9 @@
     };
     var winr = cnt('winner');
     $('#main').innerHTML =
+      panel('行业分布 <small style="font-size:11px;color:var(--hint)">哪些赛道项目最多</small>',
+            '按行业标签统计（一条公告可归属多个赛道）；点「商机」页的行业分类可多选筛选。',
+            bars(catRank(), 'p', '条')) +
       panel('中标单位榜 <small style="font-size:11px;color:var(--hint)">谁在拿单</small>',
             '中标人需抓取公告正文才能提取，覆盖率取决于详情采集配额；样本越多结论越准。',
             winr.length ? bars(winr, 'w', '单')
@@ -343,7 +385,7 @@
     var words = (p.kw || '').split(/[\s,，、]+/).filter(Boolean);
     var now = Date.now();
     ALL.forEach(function (r) {
-      var s = 0, hay = r.title + ' ' + r.cat + ' ' + r.type;
+      var s = 0, hay = r.title + ' ' + r.cat + ' ' + r.type + ' ' + r.cats.join(' ');
       var hit = 0;
       words.forEach(function (w) { if (hay.indexOf(w) >= 0) hit++; });
       if (words.length) s += Math.min(50, Math.round(hit / words.length * 50));
@@ -380,6 +422,15 @@
   document.addEventListener('click', function (e) {
     var tab = e.target.closest ? e.target.closest('.tab,.nav div') : null;
     if (tab && tab.dataset.t) { flipTab(tab.dataset.t); return; }
+    /* 行业分类 chip：多选，点一次切换一次，互不影响 */
+    var cc = e.target.closest ? e.target.closest('.chip[data-cat]') : null;
+    if (cc) {
+      var key = cc.dataset.cat, on = !SELCAT[key];
+      SELCAT[key] = on;
+      cc.classList.toggle('on', on);
+      applyFilter();
+      return;
+    }
     var chip = e.target.closest ? e.target.closest('.chip') : null;
     if (chip) {
       Array.prototype.forEach.call(chip.parentNode.children, function (c) { c.classList.remove('on'); });
@@ -394,4 +445,14 @@
     el.addEventListener(s === '#kw' ? 'input' : 'change', applyFilter);
   });
   $('#clr').addEventListener('click', function () { $('#kw').value = ''; applyFilter(); });
+  $('#catClr').addEventListener('click', function () {
+    SELCAT = {};
+    Array.prototype.forEach.call(document.querySelectorAll('#cats .chip'),
+      function (c) { c.classList.remove('on'); });
+    applyFilter();
+  });
+  $('#catMore').addEventListener('click', function () {
+    var box = $('#cats'), open = box.classList.toggle('open');
+    this.textContent = open ? '收起' : '展开全部';
+  });
 })();
