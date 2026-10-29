@@ -187,6 +187,17 @@
     $('#main').innerHTML = html;
     var m = $('#more');
     if (m) m.onclick = function () { SHOWN += PAGE; render(); };
+    /* 标题点击 → 打开详情抽屉（原文链接仍在抽屉右上角） */
+    Array.prototype.forEach.call($('#main').querySelectorAll('.cd-t a'), function (a) {
+      a.onclick = function (e) {
+        if (e.metaKey || e.ctrlKey) return;      // 保留「新标签打开原文」
+        e.preventDefault();
+        var id = a.getAttribute('data-id');
+        for (var i = 0; i < VIEW.length; i++) {
+          if (VIEW[i].id === id) { openDetail(VIEW[i]); return; }
+        }
+      };
+    });
   }
 
   function card(r, withScore) {
@@ -217,7 +228,8 @@
 
     return '<article class="cd ' + cls + '">' +
       (withScore ? '<div class="score"><b>' + r.score + '</b><span>匹配度</span></div>' : '') +
-      '<h3 class="cd-t"><a href="' + esc(r.url) + '" target="_blank" rel="noopener">' + title + '</a></h3>' +
+      '<h3 class="cd-t"><a href="' + esc(r.url) + '" data-id="' + esc(r.id) +
+        '" target="_blank" rel="noopener">' + title + '</a></h3>' +
       '<div class="tags">' + tags + '</div>' +
       '<div class="meta">' + meta.map(function (t) { return '<span>' + t + '</span>'; }).join('') + '</div>' +
       '</article>';
@@ -275,6 +287,160 @@
     var html = card(r, false);
     if (extraTag) html = html.replace('</div><div class="meta">', extraTag + '</div><div class="meta">');
     return html;
+  }
+
+  /* ---------- 详情数据（按需加载，不进首屏） ----------
+     details.json 里是正文 + 结构化信息 + 联系人，体积远大于列表，
+     因此不在首屏拉取，等用户点开某条公告 / 打开通讯录时才加载一次。 */
+  var DMAP = null, DLOAD = null;
+  function loadDetails(cb) {
+    if (DMAP) { cb(DMAP); return; }
+    if (DLOAD) { DLOAD.then(cb); return; }
+    DLOAD = fetch('data/details.json', { cache: 'no-store' })
+      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(function (j) { DMAP = j.items || {}; $('#cCt').textContent = j.count || 0; return DMAP; })
+      .catch(function () { DMAP = {}; return DMAP; });
+    DLOAD.then(cb);
+  }
+
+  function openDetail(rec) {
+    loadDetails(function (map) {
+      var d = map[rec.id];
+      $('#sheet').hidden = false;
+      document.body.classList.add('locked');
+      $('#shLink').href = rec.url || '#';
+      $('#shBody').innerHTML = sheetHtml(rec, d);
+      $('#shBody').scrollTop = 0;
+      var art = $('#art');
+      var btn = $('#artMore');
+      if (btn) btn.onclick = function () {
+        art.classList.remove('fold'); btn.hidden = true;
+      };
+    });
+  }
+  function closeDetail() {
+    $('#sheet').hidden = true;
+    document.body.classList.remove('locked');
+  }
+
+  function sheetHtml(r, d) {
+    d = d || {};
+    var f = d.f || {}, cts = d.ct || [];
+    var kv = '';
+    Object.keys(f).forEach(function (k) {
+      kv += '<dt>' + esc(k) + '</dt><dd>' + esc(f[k]) + '</dd>';
+    });
+    // 列表字段里没进结构化的，补在后面兜底展示
+    var extra = '';
+    if (r.amount) extra += '<dt>预算金额</dt><dd>' + fmtAmt(r.amount) + '</dd>';
+    if (r.winner) extra += '<dt>中标单位</dt><dd>' + esc(r.winner) + '</dd>';
+    if (r.deadline) extra += '<dt>投标截止</dt><dd>' + esc(String(r.deadline).slice(0, 16)) + '</dd>';
+
+    var ctHtml = cts.length ? cts.map(function (c) {
+      var cls = c.role === '代理机构' ? 'ag' : (c.role === '采购人' ? 'pr' : '');
+      var tel = c.mobile || c.phone || '';
+      var initial = (c.name || c.org || '?').slice(0, 1);
+      return '<div class="ct ' + cls + '">' +
+        '<div class="av">' + esc(initial) + '</div>' +
+        '<div class="who"><span class="nm">' + esc(c.name || '（未署名）') +
+        ' <small style="color:var(--hint);font-weight:400">' + esc(c.role || '') + '</small></span>' +
+        '<span class="og">' + esc(c.org || '') + '</span></div>' +
+        (tel ? '<a class="call" href="tel:' + esc(tel) + '">' + esc(tel) + '</a>'
+             : '<span class="none">无电话</span>') + '</div>';
+    }).join('') : '<p class="tip-empty">该公告正文里未解析出联系人。</p>';
+
+    var body = d.c ? '<div class="article fold" id="art">' + esc(d.c) + '</div>' +
+      '<button class="moreart" id="artMore">展开全文</button>'
+      : '<p class="tip-empty">正文尚未采集。执行 <code>python3 -m collector.run ' +
+        '--rebuild-content 500</code> 补抓正文，或点右上角查看原文。</p>';
+
+    return '<div class="sh-card">' +
+        '<h3>' + esc(r.title) + '</h3>' +
+        '<div class="sh-sub"><span>' + esc(r.stage) + '</span><span>' + esc(r.region) + '</span>' +
+        '<span>' + esc(r.time || (r.pub_time || '')) + '</span><span>' + esc(shortSrc(r.src)) + '</span></div>' +
+        (kv || extra ? '<div class="sh-sec">结构化信息 <span>从公告正文解析</span></div>' +
+          '<dl class="kv">' + kv + extra + '</dl>' : '') +
+      '</div>' +
+      '<div class="sh-card"><div class="sh-sec">联系人 <span>' + cts.length + ' 位</span></div>' +
+        ctHtml + '</div>' +
+      '<div class="sh-card"><div class="sh-sec">公告正文</div>' + body + '</div>';
+  }
+
+  /* ---------- 通讯录 ---------- */
+  function contactsView() {
+    $('#main').innerHTML = '<div class="empty">正在加载联系人…</div>';
+    loadDetails(function (map) {
+      var rows = [];
+      Object.keys(map).forEach(function (id) {
+        var d = map[id];
+        (d.ct || []).forEach(function (c) {
+          if (!(c.name || c.mobile || c.phone)) return;
+          rows.push({ name: c.name || '', org: c.org || '', role: c.role || '',
+                      tel: c.mobile || c.phone || '', title: d.t || '',
+                      region: d.r || '', id: id });
+        });
+      });
+      $('#main').innerHTML =
+        '<section class="panel"><h3>项目联系人库 <small style="font-size:11px;color:var(--hint)">' +
+          rows.length + ' 条</small></h3>' +
+          '<p class="tip">从公告正文解析出的采购人 / 代理机构 / 项目联系人，' +
+          '随详情采集持续累积 —— 补抓的正文越多，这里越全。</p>' +
+          '<div class="ab-srch"><input id="abKw" placeholder="搜姓名 / 单位 / 电话 / 项目"></div>' +
+          '<div class="chips" id="abRole"></div></section>' +
+        '<div id="abList"></div>';
+      var roles = {};
+      rows.forEach(function (r) { roles[r.role] = (roles[r.role] || 0) + 1; });
+      $('#abRole').innerHTML = '<span class="chip on" data-role="">全部 ' + rows.length + '</span>' +
+        Object.keys(roles).map(function (k) {
+          return '<span class="chip" data-role="' + esc(k) + '">' + esc(k) + ' ' + roles[k] + '</span>';
+        }).join('');
+      var curRole = '';
+      function draw() {
+        var kw = ($('#abKw').value || '').trim();
+        var list = rows.filter(function (r) {
+          if (curRole && r.role !== curRole) return false;
+          if (!kw) return true;
+          return (r.name + r.org + r.tel + r.title).indexOf(kw) >= 0;
+        });
+        if (!list.length) {
+          $('#abList').innerHTML = '<div class="empty"><b>没有匹配的联系人</b>' +
+            '换个关键词，或先补抓正文扩大样本</div>';
+          return;
+        }
+        $('#abList').innerHTML = '<div class="list">' + list.slice(0, 200).map(function (r) {
+          return '<div class="ab-item">' +
+            '<div class="av" style="width:34px;height:34px;border-radius:9px;flex:0 0 auto;' +
+              'background:var(--brand-s);color:var(--brand);display:flex;align-items:center;' +
+              'justify-content:center;font-size:13px;font-weight:600">' +
+              esc((r.name || r.org || '?').slice(0, 1)) + '</div>' +
+            '<div class="who"><span class="nm">' + esc(r.name || '（未署名）') +
+              ' <small style="color:var(--hint);font-weight:400">' + esc(r.role) + '</small></span>' +
+              '<span class="og">' + esc(r.org || '') + (r.region ? ' · ' + esc(r.region) : '') + '</span>' +
+              '<span class="pj" data-id="' + esc(r.id) + '">▸ ' + esc(r.title.slice(0, 30)) + '</span></div>' +
+            (r.tel ? '<a class="call" href="tel:' + esc(r.tel) + '">' + esc(r.tel) + '</a>'
+                   : '<span class="none">—</span>') + '</div>';
+        }).join('') + '</div>' +
+          (list.length > 200 ? '<p class="tip" style="text-align:center">仅显示前 200 条，' +
+            '用搜索缩小范围</p>' : '');
+        Array.prototype.forEach.call(document.querySelectorAll('#abList .pj'), function (el) {
+          el.onclick = function () {
+            var rec = null;
+            for (var i = 0; i < ALL.length; i++) { if (ALL[i].id === el.dataset.id) { rec = ALL[i]; break; } }
+            if (rec) openDetail(rec);
+          };
+        });
+      }
+      $('#abKw').addEventListener('input', draw);
+      Array.prototype.forEach.call($('#abRole').children, function (c) {
+        c.onclick = function () {
+          Array.prototype.forEach.call($('#abRole').children, function (x) { x.classList.remove('on'); });
+          c.classList.add('on');
+          curRole = c.dataset.role || '';
+          draw();
+        };
+      });
+      draw();
+    });
   }
 
   /* ---------- 对手分析 ---------- */
@@ -411,8 +577,9 @@
     });
     var listLike = (t === 'all' || t === '招标公告' || t === '中标结果');
     $('#filter').style.display = listLike ? '' : 'none';
-    $('.stats').style.display = (t === 'rival' || t === 'ai' || t === 'warn') ? 'none' : '';
+    $('.stats').style.display = (t === 'rival' || t === 'ai' || t === 'warn' || t === 'contacts') ? 'none' : '';
     if (t === 'rival') { rival(); return; }
+    if (t === 'contacts') { contactsView(); return; }
     if (t === 'warn') { warnView(); return; }
     if (t === 'ai') { aiPanel(); $('#fcount').textContent = '配置画像后点击匹配'; return; }
     applyFilter();
@@ -455,4 +622,5 @@
     var box = $('#cats'), open = box.classList.toggle('open');
     this.textContent = open ? '收起' : '展开全部';
   });
+  $('#shClose').addEventListener('click', closeDetail);
 })();

@@ -25,6 +25,7 @@
     <div class="tab" data-t="warn">机会预警<small id="cPre">0</small></div>
     <div class="tab" data-t="中标结果">中标结果<small id="cWin">0</small></div>
     <div class="tab" data-t="rival">对手分析</div>
+    <div class="tab" data-t="contacts">通讯录<small id="cCt">0</small></div>
     <div class="tab" data-t="ai">AI 匹配</div>
   </nav>
 </header>
@@ -66,8 +67,7 @@
 
   <main id="main"></main>
 
-  <div class="foot">
-    快商机 · 数据源
+  <div class="foot">    快商机 · 数据源
     <a href="http://www.ccgp.gov.cn/" target="_blank" rel="noopener">中国政府采购网</a> ·
     <a href="https://gdgpo.czt.gd.gov.cn/" target="_blank" rel="noopener">广东省政府采购智慧云平台</a><br>
     数据为国家法定发布平台公开信息，本项目仅做商机聚合与去重，不构成投标建议
@@ -81,6 +81,16 @@
   <div data-t="rival"><span>◫</span>对手</div>
   <div data-t="ai"><span>✦</span>匹配</div>
 </nav>
+
+<!-- 公告详情抽屉：点卡片标题打开，正文与结构化信息按需加载 -->
+<div class="sheet" id="sheet" hidden>
+  <div class="sheet-hd">
+    <span id="shClose" class="sh-x">×</span>
+    <span class="sh-t">公告详情</span>
+    <a id="shLink" class="sh-src" href="#" target="_blank" rel="noopener">查看原文 ↗</a>
+  </div>
+  <div class="sheet-bd" id="shBody"></div>
+</div>
 
 <script src="web/app.js"></script>
 </body>

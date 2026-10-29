@@ -23,18 +23,45 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from collector.base import HttpClient                       # noqa: E402
+from collector.extract import extract_contacts, structure_of  # noqa: E402
 from collector.store import Store                           # noqa: E402
 from collector.sources.ccgp import CcgpSource, REGIONS      # noqa: E402
 from collector.sources.gdgpo import GdGpoSource, REGIONS as GD_REGIONS  # noqa: E402
 
 DB = os.path.join(ROOT, "data", "tenders.db")
 OUT = os.path.join(ROOT, "data", "tenders.json")
+DETAILS = os.path.join(ROOT, "data", "details.json")
 STATUS = os.path.join(ROOT, "data", "status.json")
 
 SOURCES = {
     "ccgp": (CcgpSource, REGIONS),
     "gdgpo": (GdGpoSource, GD_REGIONS),
 }
+
+
+def source_for_url(url: str, client: HttpClient):
+    """按 URL 判断该用哪个适配器 —— 正文补录要跨源混跑，不能靠 --source 指定。"""
+    return GdGpoSource(client) if "gdgpo.czt.gd.gov.cn" in url else CcgpSource(client)
+
+
+def enrich(store: Store, src, item: dict) -> bool:
+    """抓一条详情并落库：主表补字段 + 正文 / 结构化 / 联系人三件套。"""
+    rec = src.fetch_detail(item["url"])
+    if not rec:
+        return False
+    rec["id"] = item["id"]
+    rec.setdefault("detail_flag", 1)      # 广东源适配器未设该标记，这里兜底
+    content = rec.pop("content", "") or ""
+    store.upsert(rec)
+    if not content:
+        return True
+    base = store.get(item["id"]) or {}
+    base = {**base, **{k: v for k, v in rec.items() if v not in (None, "")}}
+    store.save_content(item["id"], content, structure_of(content, base))
+    rows = extract_contacts(content, base.get("buyer") or "",
+                            base.get("agency") or "")
+    store.save_contacts(item["id"], rows, base)
+    return True
 
 
 def build_regions(names: str | None, default_regions):
@@ -69,6 +96,10 @@ def main():
                     help="只做行业分类补录（不联网），可用 --recat 全量重算")
     ap.add_argument("--recat", action="store_true",
                     help="配合 --backfill-category：覆盖已有分类全量重算")
+    ap.add_argument("--rebuild-content", type=int, default=0,
+                    help="补抓已采集详情的正文（存库 + 结构化 + 联系人）")
+    ap.add_argument("--reparse", action="store_true",
+                    help="不联网，用库内已有正文重算结构化信息与联系人（改抽取逻辑后用）")
     args = ap.parse_args()
 
     client = HttpClient(delay=args.delay)
@@ -83,6 +114,51 @@ def main():
         for k, v in sorted(dist.items(), key=lambda kv: -kv[1]):
             print(f"    {k:<12} {v:>6}")
         print(f"[导出] {OUT}（{out} 条）")
+        return
+
+    if args.reparse:
+        rows = store.conn.execute(
+            "SELECT c.id,c.content,t.title,t.buyer,t.agency,t.region,t.source,"
+            "t.pub_time,t.amount,t.winner,t.deadline FROM tender_content c "
+            "JOIN tenders t ON t.id=c.id").fetchall()
+        base_keys = ("title", "buyer", "agency", "region", "source", "pub_time",
+                     "amount", "winner", "deadline")
+        for rid, content, *meta in rows:
+            base = dict(zip(base_keys, meta))
+            store.save_content(rid, content, structure_of(content, base))
+            store.save_contacts(rid, extract_contacts(content, base.get("buyer") or "",
+                                                       base.get("agency") or ""), base)
+        store.conn.commit()
+        nd = store.export_details(DETAILS)
+        st = store.stats()
+        store.set_meta("last_reparse", time.strftime("%Y-%m-%d %H:%M:%S"))
+        store.close()
+        print(f"[重解析] {len(rows)} 条正文 → 联系人 {st['contacts']} 条"
+              f"（含手机号 {st['with_mobile']}）")
+        print(f"[导出] {DETAILS}（{nd} 条）")
+        return
+
+    if args.rebuild_content > 0:
+        pend = store.pending_content(args.rebuild_content)
+        print(f"[正文补录] 待补 {len(pend)} 条（已抓详情但正文未入库）")
+        done = 0
+        for i, item in enumerate(pend, 1):
+            try:
+                if enrich(store, source_for_url(item["url"], client), item):
+                    done += 1
+            except Exception as e:
+                print(f"    ✗ {item['id']} {type(e).__name__} {e}")
+            if i % 20 == 0:
+                store.conn.commit()
+                print(f"    {i}/{len(pend)}…")
+        store.conn.commit()
+        nd = store.export_details(DETAILS)
+        st = store.stats()
+        store.set_meta("last_content", time.strftime("%Y-%m-%d %H:%M:%S"))
+        store.close()
+        print(f"[完成] 补录正文 {done} 条 · 库内正文 {st['with_content']} 条 · "
+              f"联系人 {st['contacts']} 条（含手机号 {st['with_mobile']}）")
+        print(f"[导出] {DETAILS}（{nd} 条）")
         return
 
     if args.reset_stage:
@@ -124,23 +200,25 @@ def main():
         pend = store.pending_detail(args.detail)
         print(f"\n[详情] 待补 {len(pend)} 条")
         for i, item in enumerate(pend, 1):
-            rec = src.fetch_detail(item["url"])
-            if rec:
-                rec["id"] = item["id"]
-                store.upsert(rec)
-                detail_done += 1
+            try:
+                if enrich(store, src, item):
+                    detail_done += 1
+            except Exception as e:
+                print(f"    ✗ {item['id']} {type(e).__name__} {e}")
             if i % 10 == 0:
                 store.conn.commit()
                 print(f"    详情 {i}/{len(pend)}…")
         store.conn.commit()
 
     n = store.export(OUT, keep_other=args.export_all)
+    nd = store.export_details(DETAILS)
     db_total = store.conn.execute("SELECT COUNT(*) FROM tenders").fetchone()[0]
     with_detail = store.conn.execute(
         "SELECT COUNT(*) FROM tenders WHERE detail_flag=1").fetchone()[0]
     cat_dist = dict(store.conn.execute(
         "SELECT category, COUNT(*) FROM tenders WHERE category IS NOT NULL "
         "AND stage<>'其他' GROUP BY category").fetchall())
+    st = store.stats()
     store.set_meta("last_run", time.strftime("%Y-%m-%d %H:%M:%S"))
     store.close()
 
@@ -157,6 +235,9 @@ def main():
         "detail_done": detail_done,
         "health": src.health,
         "categories": cat_dist,
+        "with_content": st["with_content"],
+        "contacts": st["contacts"],
+        "contacts_with_mobile": st["with_mobile"],
     }
     with open(STATUS, "w", encoding="utf-8") as f:
         json.dump(status, f, ensure_ascii=False, indent=2)
@@ -165,6 +246,8 @@ def main():
     print(f"采集完成 · 库内总量 {db_total} 条 · 本次新增 {total_new} 条")
     print(f"导出前端 {n} 条" + ("" if args.export_all else "（已排除「其他」类，加 --export-all 可全量导出）"))
     print(f"详情已补齐 {with_detail} 条 · 列表耗时 {list_sec:.1f}s")
+    print(f"正文入库 {st['with_content']} 条 · 联系人 {st['contacts']} 条"
+          f"（含手机号 {st['with_mobile']}） · 导出 {DETAILS}（{nd} 条）")
     print(f"产出：{OUT}")
     print("=" * 52)
 

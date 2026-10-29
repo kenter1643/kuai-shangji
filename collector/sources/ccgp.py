@@ -17,6 +17,7 @@ from urllib.parse import urljoin
 from collector.base import (BaseSource, clean_text, extract_amount,
                             extract_contact, extract_deadline, extract_winner,
                             guess_category, uid_of)
+from collector.extract import html_to_text
 
 SEARCH = "http://search.ccgp.gov.cn/bxsearch"
 ROOT = "http://www.ccgp.gov.cn/"
@@ -200,5 +201,7 @@ class CcgpSource(BaseSource):
             "contact": contact.get("contact", ""),
             "phone": contact.get("phone", ""),
             "detail_flag": 1,
+            # 正文一并带回（store 会分离入库，不进 tenders 主表）
+            "content": html_to_text(body),
         }
         return rec

@@ -43,6 +43,34 @@ CREATE INDEX IF NOT EXISTS idx_time   ON tenders(pub_time);
 CREATE TABLE IF NOT EXISTS meta(
     k TEXT PRIMARY KEY, v TEXT
 );
+/* 正文与结构化信息单独成表：正文体积大（单条数 KB ~ 数十 KB），
+   与主表分离后列表查询、导出都不会被正文拖慢，H5 也是按需加载。 */
+CREATE TABLE IF NOT EXISTS tender_content(
+    id          TEXT PRIMARY KEY,
+    content     TEXT,
+    structured  TEXT,
+    char_len    INTEGER DEFAULT 0,
+    fetched_at  INTEGER
+);
+/* 联系人单独成表：一条公告可有多位联系人（采购人 / 代理机构 / 项目联系人），
+   单独存才能按人检索、复用到「通讯录」，而不是淹没在正文里。 */
+CREATE TABLE IF NOT EXISTS contacts(
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    tender_id  TEXT,
+    role       TEXT,
+    org        TEXT,
+    name       TEXT,
+    mobile     TEXT,
+    phone      TEXT,
+    email      TEXT,
+    title      TEXT,
+    region     TEXT,
+    source     TEXT,
+    pub_time   TEXT,
+    created_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_ct_tender ON contacts(tender_id);
+CREATE INDEX IF NOT EXISTS idx_ct_phone  ON contacts(mobile, phone);
 """
 
 FIELDS = ["id", "title", "url", "pub_time", "buyer", "agency", "notice_type",
@@ -51,7 +79,8 @@ FIELDS = ["id", "title", "url", "pub_time", "buyer", "agency", "notice_type",
           "category", "categories"]
 
 # 老库没有分类字段，启动即补列，避免手工删库重采
-MIGRATIONS = [("category", "TEXT"), ("categories", "TEXT")]
+MIGRATIONS = [("category", "TEXT"), ("categories", "TEXT"),
+              ("content_flag", "INTEGER DEFAULT 0")]
 
 
 from collector.classify import classify_record            # noqa: E402
@@ -86,7 +115,7 @@ class Store:
                 return False  # 列表数据不覆盖已抓过的详情数据
             sets, vals = [], []
             for k, v in rec.items():
-                if k in ("id",):
+                if k in ("id",) or k not in FIELDS:
                     continue
                 if v in (None, ""):
                     continue
@@ -128,6 +157,59 @@ class Store:
                 "ORDER BY created_at DESC LIMIT ?", (limit,))
         return [{"id": r[0], "url": r[1]} for r in cur.fetchall()]
 
+    def save_content(self, tid: str, content: str, structured: dict) -> None:
+        """保存正文与结构化信息（与 tenders 一对一）。"""
+        now = int(time.time())
+        self.conn.execute(
+            "INSERT INTO tender_content(id,content,structured,char_len,fetched_at) "
+            "VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET content=excluded.content,"
+            " structured=excluded.structured, char_len=excluded.char_len,"
+            " fetched_at=excluded.fetched_at",
+            (tid, content, json.dumps(structured, ensure_ascii=False),
+             len(content or ""), now))
+        self.conn.execute("UPDATE tenders SET content_flag=1 WHERE id=?", (tid,))
+
+    def save_contacts(self, tid: str, rows: list[dict], base: dict) -> int:
+        """保存联系人。同一公告重抓时先清旧记录，避免累积重复。"""
+        self.conn.execute("DELETE FROM contacts WHERE tender_id=?", (tid,))
+        n = 0
+        for r in rows:
+            if not (r.get("name") or r.get("mobile") or r.get("phone")):
+                continue
+            self.conn.execute(
+                "INSERT INTO contacts(tender_id,role,org,name,mobile,phone,email,"
+                "title,region,source,pub_time,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (tid, r.get("role") or "项目联系人", r.get("org") or "",
+                 r.get("name") or "", r.get("mobile") or "", r.get("phone") or "",
+                 r.get("email") or "", base.get("title") or "",
+                 base.get("region") or "", base.get("source") or "",
+                 base.get("pub_time") or "", int(time.time())))
+            n += 1
+        return n
+
+    def pending_content(self, limit: int) -> list[dict]:
+        """已抓详情但还没存正文的记录（正文补录用）。"""
+        cur = self.conn.execute(
+            "SELECT id,url,source FROM tenders WHERE detail_flag=1 AND "
+            "(content_flag IS NULL OR content_flag=0) ORDER BY created_at DESC LIMIT ?",
+            (limit,))
+        return [{"id": r[0], "url": r[1], "source": r[2]} for r in cur.fetchall()]
+
+    def get(self, tid: str) -> dict | None:
+        cur = self.conn.execute("SELECT " + ",".join(FIELDS) + " FROM tenders WHERE id=?",
+                                (tid,))
+        row = cur.fetchone()
+        return dict(zip(FIELDS, row)) if row else None
+
+    def stats(self) -> dict:
+        q = lambda s: self.conn.execute(s).fetchone()[0]          # noqa: E731
+        return {
+            "total": q("SELECT COUNT(*) FROM tenders"),
+            "with_content": q("SELECT COUNT(*) FROM tender_content"),
+            "contacts": q("SELECT COUNT(*) FROM contacts"),
+            "with_mobile": q("SELECT COUNT(*) FROM contacts WHERE mobile<>''"),
+        }
+
     def backfill_category(self, only_missing: bool = True) -> tuple[int, dict]:
         """分类补录：对历史数据重算行业分类。
 
@@ -148,6 +230,38 @@ class Store:
             dist[cat] = dist.get(cat, 0) + 1
         self.conn.commit()
         return len(rows), dist
+
+    def export_details(self, out_path: str) -> int:
+        """导出详情包（正文 + 结构化信息 + 联系人），供 H5 点开详情时按需加载。
+
+        独立文件而非并入 tenders.json：正文体积是列表数据的数倍，
+        首屏只需要列表，详情等用户点开再拉。
+        """
+        cur = self.conn.execute(
+            "SELECT c.id,c.content,c.structured,t.title,t.url,t.stage,t.region,"
+            "t.source,t.pub_time FROM tender_content c JOIN tenders t ON t.id=c.id")
+        items = {}
+        for cid, content, structured, title, url, stage, region, src, pub in cur.fetchall():
+            try:
+                st = json.loads(structured) if structured else {}
+            except ValueError:
+                st = {}
+            rows = self.conn.execute(
+                "SELECT role,org,name,mobile,phone,email FROM contacts "
+                "WHERE tender_id=? ORDER BY id", (cid,)).fetchall()
+            items[cid] = {
+                "t": title or "", "u": url or "", "s": stage or "",
+                "r": region or "", "src": src or "", "p": pub or "",
+                "c": content or "", "f": st,
+                "ct": [{"role": a, "org": b, "name": c, "mobile": d, "phone": e,
+                        "email": f} for a, b, c, d, e, f in rows],
+            }
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump({"generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                       "count": len(items), "items": items},
+                      f, ensure_ascii=False, separators=(",", ":"))
+        return len(items)
 
     def count(self) -> int:
         return self.conn.execute("SELECT COUNT(*) FROM tenders").fetchone()[0]

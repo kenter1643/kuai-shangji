@@ -44,6 +44,7 @@ import re
 from collector.base import (BaseSource, clean_text, extract_amount,
                             extract_contact, extract_deadline, extract_winner,
                             guess_category)
+from collector.extract import html_to_text
 
 BASE = "https://gdgpo.czt.gd.gov.cn/gpcms"
 PORTAL = "https://gdgpo.czt.gd.gov.cn/gpcms-center-web"
@@ -249,4 +250,6 @@ class GdGpoSource(BaseSource):
             "deadline": extract_deadline(text),
             "contact": contact.get("contact"),
             "phone": contact.get("phone"),
+            # 正文保留富文本里清洗出的可读版本（HTML 版式在 H5 里没法直接渲染）
+            "content": html_to_text(content),
         }

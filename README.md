@@ -67,6 +67,23 @@ python3 -m http.server 8777
 
 采集结果写入 `data/tenders.db`（SQLite），并导出 `data/tenders.json` 供前端读取。
 
+## 数据存储（统一入库）
+
+`data/tenders.db` 是**唯一权威数据源**，前端 JSON 只是导出快照。三张表各司其职：
+
+| 表 | 主键 | 内容 | 为什么要分开 |
+|---|---|---|---|
+| `tenders` | `id`（URL md5） | 列表字段 + 金额 / 中标人 / 截止 / 行业分类 | 列表查询与筛选的主力，必须轻 |
+| `tender_content` | `id` | 正文 + 结构化 JSON | 正文单条数 KB ~ 数十 KB，混进主表会拖慢查询与导出 |
+| `contacts` | 自增 | 联系人（角色 / 单位 / 姓名 / 手机 / 座机 / 邮箱 / 关联公告） | 一条公告有多位联系人，竖表才能按人检索与复用 |
+
+跨源去重仍以 URL md5 为主键；老库缺列时启动时自动 `ALTER`（含分类、正文标记）。
+
+导出两个 JSON 供 H5 读取：
+
+- `data/tenders.json` —— 列表（首屏加载，3.7MB）
+- `data/details.json` —— 正文 + 结构化 + 联系人（点开详情 / 通讯录时才拉，按需加载）
+
 ### 常用命令
 
 ```bash
@@ -81,6 +98,12 @@ python3 -m collector.run --delay 2.0               # 放慢节奏（被限流时
 python3 -m collector.run --source gdgpo --pages 2 --detail 200
 python3 -m collector.run --source gdgpo --kw 智能化,安防   # 只跑指定关键词切片
 python3 tools/fetch_gd_regions.py                  # 刷新广东区县切片表
+
+# 正文补录：把「已抓详情但正文未入库」的记录重抓正文（跨源自动识别）
+python3 -m collector.run --rebuild-content 500
+
+# 行业分类补录（不联网）
+python3 -m collector.run --backfill-category --recat
 ```
 
 两个源的 `--pages` 含义不同，别混用：CCGP 是翻页数，广东源是关键词切片数。
@@ -98,16 +121,17 @@ collector/                采集层
 │   └── gd_regions.json   广东 237 个区县切片表（由 tools/fetch_gd_regions.py 生成）
 ├── store.py              SQLite 存储、去重、详情增量、导出 JSON
 ├── classify.py           行业分类词典与打分（20 个行业，支持多标签）
-└── run.py                采集入口（列表阶段 → 详情阶段）
+├── extract.py            正文清洗、结构化字段、联系人抽取
+└── run.py                采集入口（列表 → 详情 → 正文入库）
 
 tools/
 └── fetch_gd_regions.py   从平台区划接口拉取并固化广东区县切片表
 
 web/                      前端（移动端优先单页）
 ├── style.css
-├── app.js                渲染、筛选、统计、预警、对手分析、匹配评分
+├── app.js                渲染、筛选、统计、详情抽屉、通讯录、预警、对手分析、匹配
 index.html                入口页面
-data/                     采集产物（tenders.db / tenders.json / status.json）
+data/                     采集产物（tenders.db 权威源 + tenders.json / details.json 快照）
 ```
 
 ### 两阶段采集
@@ -124,6 +148,22 @@ data/                     采集产物（tenders.db / tenders.json / status.json
 
 按标题关键词归类，这是商机分层的基础：
 `招标公告` · `中标结果` · `前置预警` · `变更公告` · `异常公告` · `其他`
+
+### 正文清洗与结构化
+
+`collector/extract.py` 把详情页 HTML 洗成三类可复用资产：
+
+| 产出 | 落库位置 | 说明 |
+|---|---|---|
+| 正文 `content` | `tender_content` 表 | 剔 script/style → 块级标签转行 → 去页眉页脚噪声行 → 剔除平台页脚客服电话 |
+| 结构化 `structured` | `tender_content` 表 | 项目编号 / 采购方式 / 预算 / 中标价 / 中标单位 / 投标截止 / 开标时间 / 采购人 / 代理机构 |
+| 联系人 `contacts` | `contacts` 表 | 按角色分条：采购人 · 代理机构 · 项目联系人，含单位、姓名、手机、座机、邮箱 |
+
+两个踩过的坑：
+
+1. **平台页脚电话会混进正文**（CCGP 全国统一 `010-63819289`），不剔除会被当成项目联系人；
+2. **采购方式不能全文匹配** —— 正文常有「评审专家（**单一来源**采购人员）名单」，
+   会把公开招标误判成单一来源。优先级：正文「采购方式：」键 → 标题 → 正文开头 600 字。
 
 ### 行业分类识别
 
@@ -186,6 +226,13 @@ python3 -m collector.run --backfill-category --recat   # 词典大改后全量�
 - 废标 / 终止：项目会重新招标，可提前备标
 - 更正 / 澄清：需求或资质门槛正在松动
 - 14 天内截止：当下还能抢的窗口
+
+**公告详情** —— 点卡片标题打开全屏详情页：结构化信息（项目编号 / 采购方式 /
+预算 / 中标价 / 截止 / 开标 / 采购人 / 代理机构）+ 联系人卡片（一键拨号）+
+清洗后的公告正文（长正文折叠，一键展开）。正文按需加载，不进首屏。
+
+**通讯录** —— 从所有已采集正文里解析出的联系人库，按角色（采购人 / 代理机构 /
+项目联系人）筛选、按姓名 / 单位 / 电话 / 项目搜索，点击直接拨号，可回跳所属公告。
 
 **对手分析** —— 行业分布（哪些赛道项目最多）、中标单位榜（谁在拿单）、
 代理机构榜（谁在操盘）、采购人榜（谁在持续买单）、地区分布（资源投放参考）。
