@@ -37,7 +37,7 @@
       region: r.region || '未标注', stage: r.stage || '其他', type: r.notice_type || '',
       cat: r.category_path || '', amount: r.amount || 0, winner: r.winner || '',
       deadline: r.deadline || '', detail: !!r.detail_flag, score: 0,
-      src: r.source || '未知来源',
+      src: r.source || '未知来源', hasdoc: !!r.cf,
       /* 行业分类：categories 是多标签数组，缺失时退回主分类 category */
       cats: (r.categories && r.categories.length ? r.categories
              : [r.category || '其他'].filter(Boolean))
@@ -219,6 +219,7 @@
     if (r.amount) tags += '<span class="tag amt">预算 ' + fmtAmt(r.amount) + '</span>';
     if (r.deadline) tags += '<span class="tag dl">截止 ' + esc(String(r.deadline).slice(5)) + '</span>';
     if (r.src) tags += '<span class="tag src">来自 ' + esc(shortSrc(r.src)) + '</span>';
+    if (r.hasdoc) tags += '<span class="tag doc">正文</span>';
 
     var meta = [];
     if (r.buyer) meta.push('采购人：' + esc(r.buyer));

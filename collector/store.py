@@ -284,6 +284,12 @@ class Store:
         sql += " ORDER BY created_at DESC"
         cur = self.conn.execute(sql)
         rows = [dict(zip(FIELDS + ["created_at"], r)) for r in cur.fetchall()]
+        # 标记哪些记录已有正文：列表页据此提示「可点开看详情」，
+        # 只给有正文的写标记，避免给每条都多塞一个字段。
+        has = {r[0] for r in self.conn.execute("SELECT id FROM tender_content")}
+        for row in rows:
+            if row["id"] in has:
+                row["cf"] = 1
         # categories 以 JSON 文本存库，导出时还原成数组给前端做多选筛选
         for row in rows:
             cats = None

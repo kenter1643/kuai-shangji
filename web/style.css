@@ -120,6 +120,7 @@ select{
 .chips.flex .chip.on i{opacity:.8}
 .tag.cat{background:var(--purple-s);color:var(--purple);font-weight:500}
 .tag.cat2{background:#F2F5F9;color:var(--sub)}
+.tag.doc{background:var(--teal-s);color:var(--teal)}
 .tag.dl{background:var(--red-s);color:var(--red)}
 .meta{display:flex;flex-wrap:wrap;gap:9px;font-size:11.5px;color:var(--hint)}
 .meta i{font-style:normal;color:var(--sub)}
