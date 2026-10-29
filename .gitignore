@@ -2,10 +2,10 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 
-# 采集数据库为二进制产物，随采集增长，不入库；
-# data/tenders.json / data/contacts.json 作为样本数据保留，便于 clone 后直接预览。
+# 采集数据库为二进制产物（40MB+），随采集增长，不入库；
+# data/tenders.json / data/contacts.json / data/status.json 作为前端运行数据保留，
+# 便于 clone 后直接预览，也便于线上部署时直接上传。
 data/tenders.db
-data/status.json
 
 # 正文分片：全量一万多条正文合起来 70MB+，不入库。
 # 需要时用 `python3 -m collector.run --fill-content N` 重新生成。
