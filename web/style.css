@@ -291,6 +291,51 @@ mark{background:#FFE9A8;color:#7A4A00;border-radius:2px;padding:0 1px}
 .ab-item .pj{font-size:11px;color:var(--brand);overflow:hidden;text-overflow:ellipsis;
   white-space:nowrap;display:block;cursor:pointer}
 .foot a{color:var(--sub)}
+
+/* ---------- 登录入口 + 登录面板 ---------- */
+.acct{
+  flex:0 0 auto;height:26px;padding:0 11px;border-radius:14px;border:1px solid #9CC0F0;
+  background:var(--brand-s);color:var(--brand);font-size:12px;font-weight:500;
+  cursor:pointer;-webkit-appearance:none;appearance:none;touch-action:manipulation;
+  max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.acct.on{background:var(--teal-s);border-color:#CDEBDF;color:#0B7A5C}
+.auth-sheet{display:none;position:fixed;inset:0;z-index:300;background:rgba(16,24,40,.42);
+  align-items:center;justify-content:center;padding:16px}
+.auth-sheet.show{display:flex}
+.auth-card{width:100%;max-width:340px;background:#fff;border-radius:14px;padding:16px 16px 18px;
+  box-shadow:0 8px 30px rgba(16,24,40,.18)}
+.auth-hd{display:flex;align-items:center;margin-bottom:8px}
+.auth-hd span{flex:1;font-size:15px;font-weight:600}
+.auth-x{border:0;background:transparent;font-size:22px;line-height:1;color:var(--hint);
+  cursor:pointer;padding:0 4px;-webkit-appearance:none;appearance:none}
+.auth-tip{margin:0 0 12px;font-size:12px;color:var(--sub);line-height:1.6}
+.auth-fld{display:block;margin-bottom:6px}
+.auth-fld input{width:100%;height:40px;border:1px solid var(--line2);border-radius:10px;
+  padding:0 12px;font-size:14px;outline:none;background:#FAFBFD;color:var(--text)}
+.auth-fld input:focus{border-color:var(--brand);background:#fff}
+.auth-fld-code{display:flex;gap:8px}
+.auth-fld-code input{flex:1 1 auto;min-width:0}
+.auth-send{flex:0 0 auto;height:40px;padding:0 12px;border-radius:10px;border:1px solid var(--brand);
+  background:#fff;color:var(--brand);font-size:12.5px;cursor:pointer;white-space:nowrap;
+  -webkit-appearance:none;appearance:none}
+.auth-send:disabled{border-color:var(--line2);color:var(--hint);cursor:default}
+.auth-err{margin:0 0 8px;font-size:11.5px;color:var(--red);min-height:15px}
+.auth-submit{width:100%;height:42px;border:0;border-radius:10px;background:var(--brand);
+  color:#fff;font-size:14px;font-weight:500;cursor:pointer;-webkit-appearance:none;appearance:none}
+.auth-submit:disabled{background:#9CC0F0;cursor:default}
+.auth-signed{border-top:1px dashed var(--line);margin-top:12px;padding-top:12px}
+.auth-signed p{margin:0 0 10px;font-size:13px;color:var(--text)}
+.auth-out{width:100%;height:38px;border:1px solid var(--line2);border-radius:10px;background:#fff;
+  color:var(--sub);font-size:13px;cursor:pointer;-webkit-appearance:none;appearance:none}
+
+/* ---------- 轻提示 ---------- */
+.toast{position:fixed;left:12px;right:12px;bottom:calc(70px + var(--safe));z-index:400;
+  background:rgba(16,24,40,.92);color:#fff;font-size:12.5px;line-height:1.5;
+  padding:10px 14px;border-radius:10px;text-align:center;box-shadow:var(--sh2)}
+.toast.warn{background:#8A4B08}
+.toast.ok{background:#0B7A5C}
+
 /* 抽屉打开时锁定页面滚动 */
 body.locked{overflow:hidden}
 @media(min-width:768px){

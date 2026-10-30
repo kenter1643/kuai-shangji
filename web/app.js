@@ -382,8 +382,14 @@
     }
     var on = KSJStore.fav.toggle(rec);
     refreshFavCount();
+    /* 未登录时只提示一次：收藏照常生效（存本机），别每次点击都弹 */
+    if (on && !KSJStore.cloudState().signedIn && !FAV_HINTED) {
+      FAV_HINTED = true;
+      toast('已收藏（存本机）。登录后可跨设备同步');
+    }
     return on;
   }
+  var FAV_HINTED = false;
   function refreshFavCount() {
     var n = window.KSJStore ? KSJStore.fav.count() : 0;
     var el = $('#cFav');
@@ -409,10 +415,15 @@
         detail: false, hasdoc: false, score: 0
       };
     });
+    var st = window.KSJStore ? KSJStore.cloudState() : { signedIn: false, cloudOk: false };
+    var tip = st.signedIn
+      ? '已同步到云端，换设备登录同一个手机号就能继续看。'
+      : (st.cloudOk ? '当前只存在本机浏览器，登录后自动同步到云端。'
+                    : '当前只存在本机浏览器（云服务暂不可用）。');
     $('#main').innerHTML =
       '<section class="panel"><h3>我的收藏 <small style="font-size:11px;color:var(--hint)">' +
         recs.length + ' 条</small></h3>' +
-        '<p class="tip">数据当前保存在本机浏览器（云服务未开通），换设备或清缓存会丢失。</p></section>' +
+        '<p class="tip">' + tip + '</p></section>' +
       '<div class="list">' + recs.map(function (r) { return card(r, false); }).join('') + '</div>';
     bindCardLinks('#main');
   }
@@ -856,4 +867,158 @@
   });
   $('#shClose').addEventListener('click', closeDetail);
   /* bindFilterBar 已在定义处绑定（事件委托，早于其余初始化），此处不再重复调用 */
+
+  /* ================= 云服务：账号、登录、同步提示 ================= */
+  var TOAST_T = null;
+  function toast(msg, kind) {
+    var el = $('#toast');
+    if (!el) return;
+    el.textContent = msg;
+    el.className = 'toast' + (kind ? ' ' + kind : '');
+    el.hidden = false;
+    clearTimeout(TOAST_T);
+    TOAST_T = setTimeout(function () { el.hidden = true; }, 3400);
+  }
+
+  function syncAccountUI() {
+    var st = window.KSJStore ? KSJStore.cloudState() : { signedIn: false };
+    var btn = $('#acctBtn');
+    if (!btn) return;
+    if (st.signedIn) {
+      btn.textContent = KSJStore.userLabel() || '已登录';
+      btn.classList.add('on');
+    } else {
+      btn.textContent = '登录';
+      btn.classList.remove('on');
+    }
+  }
+
+  /* 登录面板：已登录时只给「退出」，未登录时走手机号验证码 */
+  function openAuth() {
+    var st = window.KSJStore ? KSJStore.cloudState() : { signedIn: false, error: '' };
+    $('#authPhoneErr').textContent = '';
+    $('#authErr').textContent = '';
+    if (st.signedIn) {
+      $('#authTip').textContent = '已登录，收藏与商机画像会自动保存在云端。';
+      $('#authPhone').parentNode.style.display = 'none';
+      $('#authPhoneErr').style.display = 'none';
+      $('.auth-fld-code').style.display = 'none';
+      $('#authSubmit').style.display = 'none';
+      $('#authSigned').hidden = false;
+      $('#authSignedWho').textContent = '当前账号：' + (KSJStore.userLabel() || '已登录');
+    } else {
+      $('#authTip').textContent = '登录后，收藏的商机和企业画像会存到云端，换手机、清缓存都不会丢。';
+      var phone = $('#authPhone').parentNode;
+      phone.style.display = '';
+      $('#authPhoneErr').style.display = '';
+      $('.auth-fld-code').style.display = '';
+      $('#authSubmit').style.display = '';
+      $('#authSigned').hidden = true;
+      if (!st.cloudOk) {
+        $('#authErr').textContent = st.error ? ('云服务暂不可用：' + st.error) : '云服务暂不可用';
+      }
+    }
+    $('#authSheet').classList.add('show');
+    document.body.classList.add('locked');
+  }
+  function closeAuth() {
+    $('#authSheet').classList.remove('show');
+    document.body.classList.remove('locked');
+  }
+
+  var CD_T = null;
+  function startCountdown(btn) {
+    var left = 60;
+    btn.disabled = true;
+    btn.textContent = left + 's 后重发';
+    clearInterval(CD_T);
+    CD_T = setInterval(function () {
+      left--;
+      if (left <= 0) {
+        clearInterval(CD_T);
+        btn.disabled = false;
+        btn.textContent = '获取验证码';
+        return;
+      }
+      btn.textContent = left + 's 后重发';
+    }, 1000);
+  }
+
+  $('#acctBtn').addEventListener('click', openAuth);
+  $('#authClose').addEventListener('click', closeAuth);
+  $('#authSheet').addEventListener('click', function (e) {
+    if (e.target === this) closeAuth();          // 点遮罩关闭
+  });
+  $('#authPhone').addEventListener('input', function () { $('#authPhoneErr').textContent = ''; });
+  $('#authSend').addEventListener('click', function () {
+    var btn = this;
+    var phone = $('#authPhone').value.trim();
+    if (!/^1\d{10}$/.test(phone)) {
+      $('#authPhoneErr').textContent = '请输入正确的 11 位手机号';
+      return;
+    }
+    $('#authPhoneErr').textContent = '';
+    $('#authErr').textContent = '';
+    btn.disabled = true;
+    btn.textContent = '发送中…';
+    KSJStore.auth.sendCode(phone).then(function (r) {
+      if (r.error) {
+        btn.disabled = false;
+        btn.textContent = '获取验证码';
+        $('#authErr').textContent = r.error.message;
+        return;
+      }
+      startCountdown(btn);
+      toast('验证码已发送到 ' + phone.replace(/^(\d{3})\d{4}(\d{4})$/, '$1****$2'), 'ok');
+    });
+  });
+  $('#authSubmit').addEventListener('click', function () {
+    var btn = this;
+    var phone = $('#authPhone').value.trim();
+    var code = $('#authCode').value.trim();
+    if (!/^1\d{10}$/.test(phone)) { $('#authPhoneErr').textContent = '请输入正确的 11 位手机号'; return; }
+    if (!/^\d{6}$/.test(code)) { $('#authErr').textContent = '请输入 6 位验证码'; return; }
+    $('#authErr').textContent = '';
+    btn.disabled = true;
+    btn.textContent = '登录中…';
+    KSJStore.auth.verify(phone, code).then(function (r) {
+      btn.disabled = false;
+      btn.textContent = '登录 / 注册';
+      if (r.error) { $('#authErr').textContent = r.error.message; return; }
+      toast('登录成功，收藏已同步到云端', 'ok');
+      closeAuth();
+      syncAccountUI();
+      refreshFavCount();
+      if (TAB === 'fav') favView();
+      if (TAB === 'ai') aiPanel();
+    });
+  });
+  $('#authOut').addEventListener('click', function () {
+    KSJStore.auth.signOut().then(function (r) {
+      if (r.error) { toast(r.error.message, 'warn'); return; }
+      closeAuth();
+      syncAccountUI();
+      refreshFavCount();
+      toast('已退出登录，收藏只保存在本机');
+    });
+  });
+
+  /* 启动云服务：恢复会话 → 合并收藏与画像 → 刷新 UI。
+     失败不静默：state.error 会由 toast 说出来，本机数据照常可用 */
+  if (window.KSJStore) {
+    KSJStore.onAuthChange(function (st) {
+      syncAccountUI();
+      refreshFavCount();
+      if (TAB === 'fav') favView();
+      if (st.error) toast(st.error, 'warn');
+    });
+    KSJStore.onNotice(function (n) { toast(n.msg, n.kind); });
+    KSJStore.init().then(function (st) {
+      syncAccountUI();
+      refreshFavCount();
+      if (TAB === 'fav') favView();
+      if (st.signedIn) toast('已恢复登录，收藏 ' + KSJStore.fav.count() + ' 条', 'ok');
+      else if (st.error) toast('云服务暂不可用：' + st.error + '（数据仍存本机）', 'warn');
+    });
+  }
 })();

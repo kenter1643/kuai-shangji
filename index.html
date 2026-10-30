@@ -7,7 +7,16 @@
 <meta name="description" content="快商机 — 覆盖全国34个省级行政区的招投标商机发现控制台">
 <title>快商机 · 全国项目商机系统</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%230A63D6'/%3E%3Ctext x='32' y='45' font-size='40' font-family='sans-serif' font-weight='bold' fill='white' text-anchor='middle'%3EK%3C/text%3E%3C/svg%3E">
-<link rel="stylesheet" href="web/style.css?v=20261029b">
+<link rel="stylesheet" href="web/style.css?v=20261031a">
+<!-- 云服务配置：来自开通时返回的 publicConfig。publishableKey 只标识应用，
+     本身不带权限（服务端按 Origin 精确匹配），所以放在前端是设计如此。 -->
+<script>
+  window.KSJ_CLOUD_CONFIG = {
+    endpoint: "https://kuai-shangji.app.workbuddy.host",
+    oauthRelayBaseUrl: "https://www.workbuddy.cn/v2/as/genie-baas/oauth",
+    publishableKey: "wbpk_1pGKURuLJI8zDJEE6JKYyi_77zE0WZ554hZ041rq6131yA2BVnEV23g"
+  };
+</script>
 </head>
 <body>
 
@@ -18,6 +27,8 @@
       <div class="brand">快<em>商机</em></div>
     </div>
     <div class="hd-dot"><i class="pulse"></i><span id="srcSt">采集中</span></div>
+    <!-- 登录入口：未登录显示「登录」，登录后显示脱敏手机号，点开可退出 -->
+    <button class="acct" id="acctBtn" type="button">登录</button>
   </div>
   <nav class="tabs" id="tabs">
     <div class="tab on" data-t="all">商机广场<small id="cAll">0</small></div>
@@ -96,6 +107,34 @@
   <div data-t="ai"><span>✦</span>匹配</div>
 </nav>
 
+<!-- 登录面板：手机号验证码登录。收藏与画像登录后存云端，换设备不丢 -->
+<div class="auth-sheet" id="authSheet">
+  <div class="auth-card">
+    <div class="auth-hd">
+      <span>登录 / 注册</span>
+      <button class="auth-x" id="authClose" type="button" aria-label="关闭">×</button>
+    </div>
+    <p class="auth-tip" id="authTip">登录后，收藏的商机和企业画像会存到云端，换手机、清缓存都不会丢。</p>
+    <label class="auth-fld">
+      <input id="authPhone" type="tel" inputmode="numeric" maxlength="11" autocomplete="tel" placeholder="手机号">
+    </label>
+    <p class="auth-err" id="authPhoneErr"></p>
+    <label class="auth-fld auth-fld-code">
+      <input id="authCode" type="text" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="6 位验证码">
+      <button class="auth-send" id="authSend" type="button">获取验证码</button>
+    </label>
+    <p class="auth-err" id="authErr"></p>
+    <button class="auth-submit" id="authSubmit" type="button">登录 / 注册</button>
+    <div class="auth-signed" id="authSigned" hidden>
+      <p id="authSignedWho"></p>
+      <button class="auth-out" id="authOut" type="button">退出登录</button>
+    </div>
+  </div>
+</div>
+
+<!-- 轻提示：云端同步失败、登录结果等都走这里 -->
+<div class="toast" id="toast" hidden></div>
+
 <!-- 公告详情抽屉：点卡片标题打开，正文与结构化信息按需加载 -->
 <div class="sheet" id="sheet" hidden>
   <div class="sheet-hd">
@@ -106,7 +145,9 @@
   <div class="sheet-bd" id="shBody"></div>
 </div>
 
-<script src="web/store.js?v=20261029b"></script>
-<script src="web/app.js?v=20261029b"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tencent-ai/workbuddy-cloud-sdk@dev/lib/index.global.js"></script>
+<script src="web/cloud.js?v=20261031a"></script>
+<script src="web/store.js?v=20261031a"></script>
+<script src="web/app.js?v=20261031a"></script>
 </body>
 </html>

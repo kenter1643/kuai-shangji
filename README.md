@@ -273,34 +273,48 @@ python3 -m collector.run --backfill-category --recat   # 词典大改后全量�
 
 ## 数据层与云服务
 
-### 当前状态：未开通（本地实现）
+### 当前状态：已开通并接入
 
-云服务的开通确认在弹窗中被取消，没有拿到 `publicConfig`，**因此没有接入真实云端**。
-按平台指示改为本地实现，全部读写收敛在 `web/store.js`：
+云服务已开通（`billingStatus: normal` / `provisionStatus: assigned`），
+接入方式全部走官方 SDK `@tencent-ai/workbuddy-cloud-sdk`（CDN 形式，本项目无构建步骤）：
+
+- `index.html` 内联 `KSJ_CLOUD_CONFIG`（即 `publicConfig` 的 `endpoint` /
+  `oauthRelayBaseUrl` / `publishableKey`，前端可见是设计如此，publishableKey 本身不带权限）；
+- `web/cloud.js` 负责初始化客户端 + 登录 + 收藏 / 画像的云端读写，每个方法都返回
+  `{ data, error }`，不抛异常、不做匿名兜底、不伪造会话；
+- `web/store.js` 保持**同步 API**（按钮点了要马上有反应），云端那一步在后台跑：
+  未登录 → 落 `localStorage` 并在 UI 明说「仅存本机」；已登录 → 云端为准，
+  启动时先补传本机收藏再拉云端全量做并集，之后每次增删都异步同步。
+  云端写失败不会假装成功，会弹提示并保留本机数据。
+
+对外 API 没变，UI 调用方不需要改：
 
 ```js
 KSJStore.fav.toggle(rec)     // 收藏 / 取消收藏，返回收藏后状态
 KSJStore.fav.all() / has(id) / remove(id) / count()
-KSJStore.profile.get() / set(p)   // AI 匹配用的企业画像
-KSJStore.hist.push(rec) / all()   // 最近浏览（最多 50 条）
+KSJStore.profile.get() / set(p)   // AI 匹配用的企业画像（登录后存云端）
+KSJStore.hist.push(rec) / all()   // 最近浏览（最多 50 条，仅本机）
+KSJStore.auth.sendCode(phone) / verify(phone, code) / signOut()
 ```
 
-底层是 `localStorage`（键前缀 `ksj_`），带 try/catch 降级 ——
-无痕模式或存储被禁用时不会崩页面，只是当次会话不留存。
+### 云数据库结构
 
-**代价要说清楚**：数据只在这台设备的浏览器里，换设备、换浏览器、清缓存、无痕模式都会丢，
-也没法多端同步。
+| 表 | 用途 | 关键列 |
+|---|---|---|
+| `favorites` | 用户收藏的商机 | `tender_id`、`title`、`buyer`、`region`、`amount`、`pub_time`、`url`、`snapshot JSONB`（整条记录快照，换设备也能还原卡片）、`UNIQUE(owner_id, tender_id)` |
+| `profiles` | AI 匹配的企业画像 | `data JSONB`、`UNIQUE(owner_id)` |
 
-### 开通云服务后的迁移点
+两张表都是 `owner_id TEXT NOT NULL DEFAULT auth.uid()` + RLS 私有策略
+（select/insert/update/delete 全部 `owner_id = auth.uid()`），且只 GRANT 给 `authenticated` ——
+前端永远不传 `owner_id`，未登录写入会被数据库以 `42501` 拒绝。
 
-只有 `web/store.js` 里的 `read()` / `write()` 需要改，上层 UI 一行都不用动：
+登录方式为**手机号验证码**（短信 OTP），未登录也能正常浏览与本地收藏。
 
-1. 把 `fav` / `profile` / `hist` 三张表建到云数据库，每条记录带 `userId`；
-2. `all()` 换成带身份约束的查询（**不能让一个用户读到另一个用户的数据**）；
-3. 客户端用 `publicConfig` 的 `endpoint` + `publishableKey` 初始化，
-   不要把端点写死在代码里 —— 重新发布后域名会变，服务端是精确 Origin 校验。
+### 迁移时不要踩的坑
 
-收藏目前存的是「id + 关键字段快照」：只存 id 的话，公告从列表下线后就渲染不出来了。
+- `endpoint` 只从 `publicConfig` 取，别写死、别从 `location` 推断 —— 服务端是精确 Origin 校验；
+- 重新发布时必须复用同一个 `applicationId`，否则域名变了，云登录会因为 Origin 不匹配而失效；
+- 收藏存的是「id + 关键字段快照」：只存 id 的话，公告从列表下线后就渲染不出来了。
 
 ## 已知限制
 
@@ -313,8 +327,9 @@ KSJStore.hist.push(rec) / all()   // 最近浏览（最多 50 条）
    如需语义级匹配可再接入 LLM。
 4. **详情覆盖率受配额限制。** 金额、中标人等字段只存在于正文，
    提高 `--detail` 配额可提升覆盖率。
-5. **收藏 / 画像存在浏览器本地，不是云端。** 见上一节「数据层与云服务」——
-   云服务未开通，换设备或清缓存会丢。
+5. **未登录时收藏 / 画像只存在本机。** 云服务已开通，但数据隔离要求真实身份，
+   不做匿名上传：登录同一个手机号即可跨设备同步（见「数据层与云服务」）。
+6. **每日采集跑在本机，不在云端。** 静态托管环境没有调度器，见「每日自动采集」。
 
 ---
 
